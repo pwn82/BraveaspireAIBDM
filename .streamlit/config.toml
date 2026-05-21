@@ -1,0 +1,26 @@
+[theme]
+# ── BraveAspire Deep Indigo Professional Theme ───────────────────────────────
+base                     = "dark"
+
+# Main canvas — near-black, not harsh
+backgroundColor          = "#0D0D14"
+
+# Cards, inputs, modals — deep indigo-tinted dark
+secondaryBackgroundColor = "#12102A"
+
+# Primary accent — electric violet-purple
+primaryColor             = "#7C3AED"
+
+# Body text — soft lavender-white
+textColor                = "#E2E0F0"
+
+font                     = "sans serif"
+
+[server]
+port                     = 8501
+headless                 = true
+enableCORS               = false
+enableXsrfProtection     = false
+
+[browser]
+gatherUsageStats         = false

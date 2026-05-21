@@ -1,0 +1,64 @@
+# ── Secrets & credentials ──────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets.json
+credentials.json
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── SQLite local DB ────────────────────────────────────────────────────
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+*.db-journal
+
+# ── Vector DB ──────────────────────────────────────────────────────────
+vector_db/
+chroma_db/
+
+# ── Logs ───────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Streamlit ──────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ── IDE / editors ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Claude / Cursor / AI tools ─────────────────────────────────────────
+.claude/settings.local.json
+.cursorignore
+
+# ── Build artifacts (PDFs at repo root — moved to docs/) ──────────────
+/BraveAspire_User_Guide.pdf
+/BraveAspire_Cheat_Sheet.pdf
+
+# ── OS ─────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+~$*

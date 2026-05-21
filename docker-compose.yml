@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+
+  # ── Streamlit Frontend ─────────────────────────────────────────────────────
+  streamlit:
+    build: .
+    container_name: braveaspire_streamlit
+    command: streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./vector_db:/app/vector_db
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite:////app/data/bdm.db
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # ── FastAPI Backend ────────────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: braveaspire_api
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite:////app/data/bdm.db
+    restart: unless-stopped
+
+  # ── Optional: PostgreSQL ───────────────────────────────────────────────────
+  # Uncomment to use PostgreSQL instead of SQLite
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: braveaspire_postgres
+  #   environment:
+  #     POSTGRES_DB: bdm
+  #     POSTGRES_USER: bdm
+  #     POSTGRES_PASSWORD: bdmpassword
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   restart: unless-stopped
+
+volumes:
+  postgres_data:
