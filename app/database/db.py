@@ -38,18 +38,24 @@ _IS_CLOUD = _is_cloud_env()
 
 # ── Database URL ──────────────────────────────────────────────────────────────
 # Priority:
-#   1. DATABASE_URL env var (full SQLAlchemy URL — e.g. for managed PostgreSQL)
-#   2. SQL Server if explicitly enabled with USE_SQLSERVER=true AND not on cloud
-#   3. SQLite (default — works everywhere, no dependencies)
+#   1. DATABASE_URL env var (full SQLAlchemy URL — works with any DB)
+#   2. AZURE_SQL_* env vars → cloud SQL Server via pymssql (Linux-friendly)
+#   3. USE_SQLSERVER=true + local pyodbc (Windows + Trusted_Connection)
+#   4. SQLite (default — works everywhere, no dependencies)
 _DB_SERVER = os.getenv("DB_SERVER", "LAPTOP-5LTAD0QS\\SQLEXPRESS")
 _DB_NAME   = os.getenv("DB_NAME",   "BraveAspireBDM")
 _DB_DRIVER = os.getenv("DB_DRIVER", "ODBC+Driver+17+for+SQL+Server")
 
+# Cloud SQL Server (Azure SQL / AWS RDS for SQL Server / etc.) via pymssql
+_AZURE_SERVER   = os.getenv("AZURE_SQL_SERVER",   "")  # e.g. yourname.database.windows.net
+_AZURE_DB       = os.getenv("AZURE_SQL_DATABASE", "")  # e.g. BraveAspireBDM
+_AZURE_USER     = os.getenv("AZURE_SQL_USER",     "")  # e.g. sqladmin@yourname
+_AZURE_PASSWORD = os.getenv("AZURE_SQL_PASSWORD", "")
+_AZURE_PORT     = os.getenv("AZURE_SQL_PORT",     "1433")
 
-def _build_mssql_url() -> str:
-    """
-    Build SQLAlchemy URL for SQL Server using pyodbc pass-through connection string.
-    """
+
+def _build_mssql_url_pyodbc() -> str:
+    """SQL Server URL via pyodbc (local Windows + Trusted_Connection)."""
     from urllib.parse import quote_plus
     driver  = _DB_DRIVER.replace("+", " ")
     odbc_cs = (
@@ -62,12 +68,34 @@ def _build_mssql_url() -> str:
     return f"mssql+pyodbc:///?odbc_connect={quote_plus(odbc_cs)}"
 
 
-def _can_use_mssql() -> bool:
-    """Check whether pyodbc is importable AND we're not on a cloud host."""
+def _build_mssql_url_pymssql() -> str:
+    """SQL Server URL via pymssql (cloud / Linux / Streamlit Cloud)."""
+    from urllib.parse import quote_plus
+    user = quote_plus(_AZURE_USER)
+    pwd  = quote_plus(_AZURE_PASSWORD)
+    return (
+        f"mssql+pymssql://{user}:{pwd}@{_AZURE_SERVER}:{_AZURE_PORT}/{_AZURE_DB}"
+        "?charset=utf8&tds_version=7.4"
+    )
+
+
+def _can_use_pyodbc() -> bool:
+    """Local Windows path — pyodbc importable + not on cloud host."""
     if _IS_CLOUD:
         return False
     try:
         import pyodbc  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _can_use_pymssql() -> bool:
+    """Cloud path — pymssql importable AND Azure SQL credentials configured."""
+    if not (_AZURE_SERVER and _AZURE_DB and _AZURE_USER and _AZURE_PASSWORD):
+        return False
+    try:
+        import pymssql  # noqa: F401
         return True
     except ImportError:
         return False
@@ -78,24 +106,32 @@ DATABASE_URL = ""
 _use_mssql   = False
 
 if os.getenv("DATABASE_URL"):
-    # Highest priority — user-supplied connection string (managed Postgres, etc.)
+    # 1. Highest priority — user-supplied full SQLAlchemy URL
     DATABASE_URL = os.getenv("DATABASE_URL")
-    _use_mssql   = "mssql" in DATABASE_URL or "pyodbc" in DATABASE_URL
-    log.info("Using DATABASE_URL: %s", DATABASE_URL.split("@")[-1][:50])
-elif os.getenv("USE_SQLSERVER", "false").lower() == "true" and _can_use_mssql():
-    # SQL Server only when explicitly enabled + pyodbc available + not on cloud
-    DATABASE_URL = _build_mssql_url()
+    _use_mssql   = "mssql" in DATABASE_URL or "pyodbc" in DATABASE_URL or "pymssql" in DATABASE_URL
+    log.info("DB: using DATABASE_URL → %s", DATABASE_URL.split("@")[-1][:60])
+
+elif _can_use_pymssql():
+    # 2. Azure SQL / cloud SQL Server via pymssql (works on Streamlit Cloud)
+    DATABASE_URL = _build_mssql_url_pymssql()
     _use_mssql   = True
-    log.info("Using SQL Server: %s\\%s", _DB_SERVER, _DB_NAME)
+    log.info("DB: Azure/Cloud SQL Server (pymssql) → %s/%s", _AZURE_SERVER, _AZURE_DB)
+
+elif os.getenv("USE_SQLSERVER", "false").lower() == "true" and _can_use_pyodbc():
+    # 3. Local Windows SQL Server via pyodbc + Trusted Connection
+    DATABASE_URL = _build_mssql_url_pyodbc()
+    _use_mssql   = True
+    log.info("DB: Local SQL Server (pyodbc) → %s\\%s", _DB_SERVER, _DB_NAME)
+
 else:
-    # Default — SQLite (works on every host, zero config)
+    # 4. SQLite fallback
     os.makedirs(DATA_DIR, exist_ok=True)
     DATABASE_URL = f"sqlite:///{DB_PATH}"
     _use_mssql   = False
     if _IS_CLOUD:
-        log.info("Cloud environment detected → using SQLite at %s", DB_PATH)
+        log.info("DB: cloud env detected, no Azure SQL configured → SQLite (ephemeral!)")
     else:
-        log.info("Using SQLite (default): %s", DB_PATH)
+        log.info("DB: SQLite default → %s", DB_PATH)
 
 # ── Engine configuration ──────────────────────────────────────────────────────
 _is_sqlite  = DATABASE_URL.startswith("sqlite")
@@ -105,15 +141,17 @@ if _is_sqlite:
     _connect_args = {"check_same_thread": False}
     engine = create_engine(DATABASE_URL, connect_args=_connect_args)
 elif _is_mssql:
-    engine = create_engine(
-        DATABASE_URL,
+    _engine_kwargs = dict(
         pool_size=5,
         max_overflow=10,
-        pool_pre_ping=True,   # detect dropped connections
+        pool_pre_ping=True,    # detect dropped connections
         pool_timeout=30,
-        pool_recycle=1800,    # recycle connections every 30 min
-        fast_executemany=True,
+        pool_recycle=1800,     # recycle connections every 30 min
     )
+    # fast_executemany is a pyodbc-only option; pymssql rejects it.
+    if "pyodbc" in DATABASE_URL:
+        _engine_kwargs["fast_executemany"] = True
+    engine = create_engine(DATABASE_URL, **_engine_kwargs)
 else:
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
