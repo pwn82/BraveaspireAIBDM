@@ -6,9 +6,11 @@ numpy>=1.26.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy>=2.0.0
-pymssql>=2.3.0             # SQL Server driver that works on Linux/Cloud.
-                           # Used automatically when AZURE_SQL_* env vars are set.
-                           # Needs `freetds-dev` in packages.txt (already included).
+psycopg2-binary>=2.9.0     # PostgreSQL driver (Neon / Supabase / Render / etc.)
+                           # Activated via DATABASE_URL=postgresql://...
+pymssql>=2.3.0             # SQL Server driver for Linux/Cloud.
+                           # Activated via AZURE_SQL_* env vars.
+                           # Needs `freetds-dev` in packages.txt.
 # pyodbc>=5.1.0            # Uncomment ONLY for local Windows + Trusted Connection
                            # to your laptop's SQL Server. Streamlit Cloud doesn't
                            # have the Microsoft ODBC driver.
