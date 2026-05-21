@@ -1,28 +1,57 @@
 import os
+import logging
+import platform
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker
 from .models import Base, Company, Contact, Outreach, FollowUp, User
 
+log = logging.getLogger(__name__)
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH  = os.path.join(DATA_DIR, "bdm.db")
 
+# ── Cloud / hosted environment detection ─────────────────────────────────────
+# Streamlit Cloud, Heroku, Railway, Render etc. don't have local SQL Server.
+# We detect these and force SQLite regardless of USE_SQLSERVER setting.
+def _is_cloud_env() -> bool:
+    # Streamlit Cloud mounts apps under /mount/src/
+    if os.path.exists("/mount/src"):
+        return True
+    # Streamlit Cloud sets this env var
+    if os.getenv("STREAMLIT_RUNTIME_ENV") == "cloud":
+        return True
+    # Heroku
+    if os.getenv("DYNO"):
+        return True
+    # Railway / Render / Fly.io
+    if any(os.getenv(v) for v in ("RAILWAY_ENVIRONMENT", "RENDER", "FLY_APP_NAME")):
+        return True
+    # Linux without ODBC driver → almost certainly a cloud host
+    if platform.system() == "Linux" and not os.path.exists("/usr/lib/libodbc.so"):
+        return True
+    return False
+
+_IS_CLOUD = _is_cloud_env()
+
 # ── Database URL ──────────────────────────────────────────────────────────────
-# Priority:  1. DATABASE_URL env var  2. SQL Server (if configured)  3. SQLite dev fallback
+# Priority:
+#   1. DATABASE_URL env var (full SQLAlchemy URL — e.g. for managed PostgreSQL)
+#   2. SQL Server if explicitly enabled with USE_SQLSERVER=true AND not on cloud
+#   3. SQLite (default — works everywhere, no dependencies)
 _DB_SERVER = os.getenv("DB_SERVER", "LAPTOP-5LTAD0QS\\SQLEXPRESS")
 _DB_NAME   = os.getenv("DB_NAME",   "BraveAspireBDM")
 _DB_DRIVER = os.getenv("DB_DRIVER", "ODBC+Driver+17+for+SQL+Server")
 
+
 def _build_mssql_url() -> str:
     """
     Build SQLAlchemy URL for SQL Server using pyodbc pass-through connection string.
-    The backslash in INSTANCE name must be URL-percent-encoded.
-    Using 'mssql+pyodbc:///?odbc_connect=...' form avoids all escaping issues.
     """
     from urllib.parse import quote_plus
-    driver  = _DB_DRIVER.replace("+", " ")   # restore spaces: ODBC Driver 17 for SQL Server
+    driver  = _DB_DRIVER.replace("+", " ")
     odbc_cs = (
         f"DRIVER={{{driver}}};"
         f"SERVER={_DB_SERVER};"
@@ -33,16 +62,40 @@ def _build_mssql_url() -> str:
     return f"mssql+pyodbc:///?odbc_connect={quote_plus(odbc_cs)}"
 
 
-# Choose connection
+def _can_use_mssql() -> bool:
+    """Check whether pyodbc is importable AND we're not on a cloud host."""
+    if _IS_CLOUD:
+        return False
+    try:
+        import pyodbc  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# ── Choose connection ─────────────────────────────────────────────────────────
+DATABASE_URL = ""
+_use_mssql   = False
+
 if os.getenv("DATABASE_URL"):
+    # Highest priority — user-supplied connection string (managed Postgres, etc.)
     DATABASE_URL = os.getenv("DATABASE_URL")
     _use_mssql   = "mssql" in DATABASE_URL or "pyodbc" in DATABASE_URL
-elif os.getenv("USE_SQLSERVER", "true").lower() == "true":
+    log.info("Using DATABASE_URL: %s", DATABASE_URL.split("@")[-1][:50])
+elif os.getenv("USE_SQLSERVER", "false").lower() == "true" and _can_use_mssql():
+    # SQL Server only when explicitly enabled + pyodbc available + not on cloud
     DATABASE_URL = _build_mssql_url()
     _use_mssql   = True
+    log.info("Using SQL Server: %s\\%s", _DB_SERVER, _DB_NAME)
 else:
+    # Default — SQLite (works on every host, zero config)
+    os.makedirs(DATA_DIR, exist_ok=True)
     DATABASE_URL = f"sqlite:///{DB_PATH}"
     _use_mssql   = False
+    if _IS_CLOUD:
+        log.info("Cloud environment detected → using SQLite at %s", DB_PATH)
+    else:
+        log.info("Using SQLite (default): %s", DB_PATH)
 
 # ── Engine configuration ──────────────────────────────────────────────────────
 _is_sqlite  = DATABASE_URL.startswith("sqlite")

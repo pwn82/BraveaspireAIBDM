@@ -6,7 +6,10 @@ numpy>=1.26.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy>=2.0.0
-pyodbc>=5.1.0              # SQL Server / ODBC driver
+# pyodbc>=5.1.0            # Uncomment ONLY for local Windows + SQL Server.
+                           # Streamlit Cloud / Heroku / Render don't have the
+                           # ODBC driver so this would fail at runtime. The app
+                           # auto-falls-back to SQLite when pyodbc is missing.
 
 # ── AI — Local + Cloud ────────────────────────────────────────────────────────
 ollama>=0.3.0
