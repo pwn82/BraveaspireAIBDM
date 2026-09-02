@@ -5,10 +5,9 @@ from app.utils.theme import apply_theme as _apply_theme
 import streamlit as st
 import pandas as pd
 from app.database.db import init_db
-from app.services.crm_service import CRMService
 from app.agents.company_scraping_agent import CompanyScrapingAgent
 from app.utils.rbac import require_auth, require_permission
-from app.utils.helpers import load_settings, get_ai_service
+from app.utils.helpers import load_settings, get_ai_service, get_scoped_crm
 
 st.set_page_config(page_title="Lead Scraper — BraveAspire", page_icon="🔎", layout="wide")
 _apply_theme()
@@ -18,7 +17,7 @@ load_settings(st)
 current_user = require_auth()
 require_permission("scraping.run", current_user)
 
-crm = CRMService()
+crm = get_scoped_crm(st)
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""

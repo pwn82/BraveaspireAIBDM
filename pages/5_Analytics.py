@@ -7,8 +7,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 from app.database.db import init_db
-from app.services.crm_service import CRMService
-from app.utils.helpers import load_settings
+from app.utils.helpers import load_settings, get_scoped_crm
 
 st.set_page_config(page_title="Analytics — BraveAspire", page_icon="📈", layout="wide")
 _apply_theme()
@@ -19,7 +18,7 @@ from app.utils.rbac import require_auth, require_permission
 _current_user = require_auth()
 require_permission("analytics.read", _current_user)
 
-crm   = CRMService()
+crm   = get_scoped_crm(st)
 stats = crm.get_pipeline_stats()
 
 # ── CSS ───────────────────────────────────────────────────────────────────────

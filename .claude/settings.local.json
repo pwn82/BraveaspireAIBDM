@@ -32,7 +32,31 @@
       "Bash(dir pages *)",
       "Bash(python -m pip install reportlab --quiet)",
       "Bash(python -c \"import reportlab; print\\('reportlab', reportlab.Version\\)\")",
-      "Bash(python scripts/build_user_guide_pdf.py)"
+      "Bash(python scripts/build_user_guide_pdf.py)",
+      "Bash(git remote *)",
+      "Bash(grep -E \"^\\\\.env$|^.env$\")",
+      "Bash(grep -E \"\\\\.env$|secrets|credentials\")",
+      "Bash(git push *)",
+      "Bash(grep -E \"^BraveAspire_.*\\\\.pdf$\")",
+      "Bash(git rm *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(grep -E \"^\\\\.env$\")",
+      "Bash(echo \"exit:$?\")",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git stash *)",
+      "Bash(set PYTHONIOENCODING=utf-8)",
+      "Bash(python -m pip install pymssql --quiet)",
+      "Bash(python -m py_compile app/database/db.py)",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":8501 :8000 :8502\")",
+      "Bash(findstr LISTENING)",
+      "Bash(findstr -E \"8501|8000|8502\")",
+      "Bash(tasklist /FI \"IMAGENAME eq python.exe\" /FO TABLE)",
+      "Bash(tasklist /FI \"IMAGENAME eq streamlit.exe\" /FO TABLE)",
+      "Bash(tasklist /FI \"IMAGENAME eq uvicorn.exe\" /FO TABLE)",
+      "PowerShell(Get-Process | Where-Object { $_.ProcessName -match 'python|streamlit|uvicorn|node' } | Select-Object Id, ProcessName, MainWindowTitle, @{n='CmdLine';e={\\(Get-CimInstance Win32_Process -Filter \"ProcessId=$\\($_.Id\\)\"\\).CommandLine}} | Format-Table -AutoSize -Wrap)"
     ]
   }
 }

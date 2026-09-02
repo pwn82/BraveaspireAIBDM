@@ -496,14 +496,62 @@ def _followup_scheduler_node(state: BDMState, ai_service, crm_service) -> dict:
 
 # ── Graph factory ─────────────────────────────────────────────────────────────
 
+def _build_checkpointer():
+    """
+    Return the best-available LangGraph checkpointer for this DB.
+
+    Preference order:
+      1. SqliteSaver  — when app runs on SQLite (dev / demo / Streamlit Cloud).
+                        State persists in a sidecar file `data/langgraph.sqlite`.
+      2. PostgresSaver — when DATABASE_URL is Postgres and langgraph.checkpoint.postgres
+                         is installed.
+      3. MemorySaver  — last resort. State is lost on restart; log a warning so
+                        this is visible in prod logs, but keep the app booting.
+    """
+    import os
+    from ..database.db import DATABASE_URL, BASE_DIR
+
+    if DATABASE_URL.startswith("sqlite"):
+        try:
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            import sqlite3
+            ck_path = os.path.join(BASE_DIR, "data", "langgraph.sqlite")
+            os.makedirs(os.path.dirname(ck_path), exist_ok=True)
+            conn = sqlite3.connect(ck_path, check_same_thread=False)
+            saver = SqliteSaver(conn)
+            saver.setup()
+            logger.info("LangGraph checkpoints → SQLite (%s)", ck_path)
+            return saver
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("SqliteSaver unavailable (%s) — falling back to MemorySaver", e)
+    else:
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver
+            saver = PostgresSaver.from_conn_string(DATABASE_URL)
+            saver.setup()
+            logger.info("LangGraph checkpoints → PostgreSQL")
+            return saver
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("PostgresSaver unavailable (%s) — falling back to MemorySaver", e)
+
+    from langgraph.checkpoint.memory import MemorySaver
+    logger.warning(
+        "LangGraph is using in-memory checkpoints — workflow state will be "
+        "LOST on restart. Install langgraph-checkpoint-sqlite or "
+        "langgraph-checkpoint-postgres for durability."
+    )
+    return MemorySaver()
+
+
 def create_bdm_workflow(ai_service, crm_service):
     """
     Build and return the compiled LangGraph BDM workflow.
-    Uses MemorySaver for HITL pause/resume.
+
+    Phase 4: uses a durable checkpointer where possible so a workflow paused
+    at human_review survives an API restart.
     """
     try:
         from langgraph.graph import StateGraph, END, START
-        from langgraph.checkpoint.memory import MemorySaver
 
         def ld(s):   return _lead_discovery_node(s, ai_service, crm_service)
         def ca(s):   return _company_analysis_node(s, ai_service, crm_service)
@@ -534,8 +582,9 @@ def create_bdm_workflow(ai_service, crm_service):
         graph.add_edge("crm_updater",        "followup_scheduler")
         graph.add_edge("followup_scheduler", END)
 
-        memory = MemorySaver()
-        app    = graph.compile(checkpointer=memory, interrupt_before=["human_review"])
+        checkpointer = _build_checkpointer()
+        app          = graph.compile(checkpointer=checkpointer,
+                                     interrupt_before=["human_review"])
         logger.info("LangGraph BDM workflow compiled successfully.")
         return app
 

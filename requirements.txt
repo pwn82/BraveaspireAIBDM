@@ -6,6 +6,7 @@ numpy>=1.26.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy>=2.0.0
+alembic>=1.13.0            # Schema migrations — replaces create_all() in prod
 psycopg2-binary>=2.9.0     # PostgreSQL driver (Neon / Supabase / Render / etc.)
                            # Activated via DATABASE_URL=postgresql://...
 pymssql>=2.3.0             # SQL Server driver for Linux/Cloud.
@@ -18,18 +19,27 @@ pymssql>=2.3.0             # SQL Server driver for Linux/Cloud.
 # ── AI — Local + Cloud ────────────────────────────────────────────────────────
 ollama>=0.3.0
 groq>=0.4.0
+openai>=1.30.0
+anthropic>=0.34.0
 
 # ── AI — LangGraph + LangChain ───────────────────────────────────────────────
 langgraph>=0.2.0
 langchain>=0.2.0
 langchain-core>=0.2.0
 langchain-community>=0.2.0
+# Durable LangGraph checkpoints — without one of these, HITL workflow state is
+# lost on restart. Pick the one matching your prod DB; both installed is fine.
+langgraph-checkpoint-sqlite>=2.0.0
+langgraph-checkpoint-postgres>=2.0.0
 
 # ── Vector DB ─────────────────────────────────────────────────────────────────
 chromadb>=0.5.0
 
 # ── FastAPI Backend ───────────────────────────────────────────────────────────
-fastapi>=0.110.0
+fastapi>=0.110.0,<0.116
+# Starlette 1.0+ dropped Router(on_startup=…) which FastAPI ≤0.115 still passes.
+# Pinning until we upgrade to a FastAPI release that uses lifespan handlers.
+starlette>=0.27,<0.40
 uvicorn[standard]>=0.29.0
 httpx>=0.27.0
 python-multipart>=0.0.9

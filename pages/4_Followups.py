@@ -6,9 +6,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from app.database.db import init_db
-from app.services.crm_service import CRMService
 from app.agents.followup_agent import FollowUpAgent
-from app.utils.helpers import load_settings, get_ai_service, send_email
+from app.utils.helpers import load_settings, get_ai_service, send_email, get_scoped_crm
 
 st.set_page_config(page_title="Follow-ups — BraveAspire", page_icon="🔁", layout="wide")
 _apply_theme()
@@ -19,7 +18,7 @@ from app.utils.rbac import require_auth, require_permission
 _current_user = require_auth()
 require_permission("followup.read", _current_user)
 
-crm = CRMService()
+crm = get_scoped_crm(st)
 
 # ── CSS (divs/spans — no tables) ──────────────────────────────────────────────
 st.markdown("""

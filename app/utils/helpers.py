@@ -11,11 +11,15 @@ def load_settings(st):
     """Initialize Streamlit session_state settings from .env (only if not already set)."""
     defaults = {
         # AI
-        "ai_provider":     os.getenv("AI_PROVIDER",       "ollama"),
-        "ollama_model":    os.getenv("OLLAMA_MODEL",       "llama3"),
-        "ollama_url":      os.getenv("OLLAMA_BASE_URL",    "http://localhost:11434"),
-        "groq_model":      os.getenv("GROQ_MODEL",         "llama-3.3-70b-versatile"),
-        "groq_api_key":    os.getenv("GROQ_API_KEY",       ""),
+        "ai_provider":       os.getenv("AI_PROVIDER",       "ollama"),
+        "ollama_model":      os.getenv("OLLAMA_MODEL",      "llama3"),
+        "ollama_url":        os.getenv("OLLAMA_BASE_URL",   "http://localhost:11434"),
+        "groq_model":        os.getenv("GROQ_MODEL",        "llama-3.3-70b-versatile"),
+        "groq_api_key":      os.getenv("GROQ_API_KEY",      ""),
+        "openai_model":      os.getenv("OPENAI_MODEL",      "gpt-4o-mini"),
+        "openai_api_key":    os.getenv("OPENAI_API_KEY",    ""),
+        "anthropic_model":   os.getenv("ANTHROPIC_MODEL",   "claude-haiku-4-5-20251001"),
+        "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
         # Email / SMTP
         "smtp_host":       os.getenv("SMTP_HOST",          "smtp.gmail.com"),
         "smtp_port":       int(os.getenv("SMTP_PORT",      "587")),
@@ -58,6 +62,25 @@ def get_api_key(st_or_key_name, key_name: str = "") -> str:
         return os.getenv(name, "")
 
 
+def get_scoped_crm(st):
+    """
+    Return a CRMService bound to the current user's organization.
+
+    Raises RuntimeError if the caller has no active org membership — that is
+    ALWAYS a bug (user must be authenticated with a valid org context before
+    reaching a CRM screen). Fail loudly rather than fall back to system mode.
+    """
+    from .rbac import get_current_org_id
+    from ..services.crm_service import CRMService
+    org_id = get_current_org_id()
+    if org_id is None:
+        raise RuntimeError(
+            "No organization context. User must be authenticated before "
+            "constructing a CRMService."
+        )
+    return CRMService(organization_id=org_id)
+
+
 def get_ai_service(st):
     """Build AIService from current session_state settings."""
     from ..services.ai_service import AIService
@@ -65,13 +88,37 @@ def get_ai_service(st):
         provider=st.session_state.get("ai_provider", "ollama"),
         ollama_model=st.session_state.get("ollama_model", "llama3"),
         ollama_url=st.session_state.get("ollama_url", "http://localhost:11434"),
-        groq_model=st.session_state.get("groq_model", "llama3-70b-8192"),
+        groq_model=st.session_state.get("groq_model", "llama-3.3-70b-versatile"),
         groq_api_key=st.session_state.get("groq_api_key", ""),
+        openai_model=st.session_state.get("openai_model", "gpt-4o-mini"),
+        openai_api_key=st.session_state.get("openai_api_key", ""),
+        anthropic_model=st.session_state.get("anthropic_model", "claude-haiku-4-5-20251001"),
+        anthropic_api_key=st.session_state.get("anthropic_api_key", ""),
     )
 
 
-def send_email(to_email: str, subject: str, body: str, settings: dict) -> tuple[bool, str]:
-    """Send email via SMTP. Returns (success, message)."""
+def send_email(to_email: str, subject: str, body: str, settings: dict,
+               organization_id: int = None, outreach_id: int = None) -> tuple[bool, str]:
+    """
+    Send email via SMTP. Returns (success, message).
+
+    Phase 5: prefers the safety-pipeline path (`EmailService.send`) when an
+    `organization_id` is supplied — that enforces suppression, unsubscribe,
+    daily quota, and stamps a Message-ID for reply threading. Callers that
+    still pass only the legacy signature keep working via a raw-SMTP fallback,
+    but that path bypasses safety checks and should be migrated.
+    """
+    if organization_id:
+        from ..services.email_service import EmailService
+        svc = EmailService(organization_id=organization_id)
+        result = svc.send(
+            to_email=to_email, subject=subject, body=body,
+            smtp_cfg=settings, outreach_id=outreach_id,
+        )
+        return result.ok, f"{result.status}: {result.reason or ''}".rstrip(": ")
+
+    # Legacy path — no tenant context, no safety checks. Preserved so pages
+    # that only test SMTP connectivity from the Settings page keep working.
     if not settings.get("smtp_user") or not settings.get("smtp_password"):
         return False, "SMTP credentials not configured. Go to Settings."
     try:

@@ -26,12 +26,32 @@ import bcrypt as _bcrypt
 from jose import JWTError, jwt
 
 from ..database.db import get_db
-from ..database.models import User, AuditLog, RefreshToken, OTPCode
+from ..database.models import User, AuditLog, RefreshToken, OTPCode, OrganizationUser
 
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SECRET_KEY              = os.getenv("SECRET_KEY", "braveaspire-change-in-production-xyz123")
+# SECRET_KEY: HARD REQUIREMENT. No default in code — a hardcoded default in a
+# public repo is equivalent to signing every JWT with a public string
+# (i.e. total auth bypass). ENV=production refuses to boot without one.
+_INSECURE_DEFAULT_SECRET = "braveaspire-change-in-production-xyz123"
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+_APP_ENV = os.getenv("APP_ENV", "development").lower()
+
+if not SECRET_KEY or SECRET_KEY == _INSECURE_DEFAULT_SECRET:
+    if _APP_ENV == "production":
+        raise RuntimeError(
+            "SECRET_KEY is missing or set to the insecure default. "
+            "Generate a strong value (e.g. `python -c \"import secrets; print(secrets.token_urlsafe(64))\"`) "
+            "and set it as an environment variable before starting the app in production."
+        )
+    # Dev / local fallback — noisy so nobody ships this to prod by accident.
+    SECRET_KEY = SECRET_KEY or "DEV-ONLY-INSECURE-SECRET-CHANGE-ME"
+    logging.getLogger(__name__).warning(
+        "SECRET_KEY not configured — using an insecure development fallback. "
+        "Set SECRET_KEY in your environment before deploying."
+    )
+
 ALGORITHM               = "HS256"
 ACCESS_TOKEN_EXPIRE_H   = 1        # 1 hour
 REFRESH_TOKEN_EXPIRE_D  = 7        # 7 days
@@ -61,12 +81,14 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 # ── JWT Access Token ──────────────────────────────────────────────────────────
 
-def create_access_token(user_id: int, email: str, role: str, mobile: str = "") -> str:
+def create_access_token(user_id: int, email: str, role: str, mobile: str = "",
+                        organization_id: Optional[int] = None) -> str:
     payload = {
         "sub":    str(user_id),
         "email":  email,
         "mobile": mobile or "",
         "role":   role,
+        "org":    organization_id if organization_id is not None else _resolve_org_id(user_id),
         "type":   "access",
         "exp":    datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_H),
     }
@@ -436,6 +458,21 @@ def _audit(db, user_id, action, resource, resource_id, details):
                     resource_id=resource_id, details=str(details)[:500]))
 
 
+def _resolve_org_id(user_id: int) -> Optional[int]:
+    """Return the primary active organization id for a user, or None."""
+    if not user_id:
+        return None
+    with get_db() as db:
+        m = (
+            db.query(OrganizationUser)
+            .filter(OrganizationUser.user_id == user_id)
+            .filter(OrganizationUser.status == "active")
+            .order_by(OrganizationUser.created_at.asc())
+            .first()
+        )
+        return m.organization_id if m else None
+
+
 def _user_dict(u: User) -> dict:
     return {
         "id":                    u.id,
@@ -451,6 +488,8 @@ def _user_dict(u: User) -> dict:
         "last_login":            u.last_login.strftime("%Y-%m-%d %H:%M") if u.last_login else "",
         "created_at":            u.created_at.strftime("%Y-%m-%d") if u.created_at else "",
         "created_by_id":         u.created_by_id,
+        # Phase 1: baked-in tenancy. Consumers use user["organization_id"].
+        "organization_id":       _resolve_org_id(u.id),
     }
 
 

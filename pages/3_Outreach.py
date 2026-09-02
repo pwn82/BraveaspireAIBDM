@@ -6,12 +6,11 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from app.database.db import init_db
-from app.services.crm_service import CRMService
 from app.services.email_tracking_service import generate_tracking_id, inject_tracking_pixel
 from app.agents.personalization_agent import PersonalizationAgent
 from app.agents.followup_agent import FollowUpAgent
 from app.agents.proposal_agent import ProposalAgent
-from app.utils.helpers import load_settings, get_ai_service, send_email
+from app.utils.helpers import load_settings, get_ai_service, send_email, get_scoped_crm
 
 st.set_page_config(page_title="Outreach — BraveAspire", page_icon="✉️", layout="wide")
 _apply_theme()
@@ -22,7 +21,7 @@ from app.utils.rbac import require_auth, require_permission
 _current_user = require_auth()
 require_permission("outreach.read", _current_user)
 
-crm = CRMService()
+crm = get_scoped_crm(st)
 
 # ── CSS (divs/spans — no tables) ──────────────────────────────────────────────
 st.markdown("""

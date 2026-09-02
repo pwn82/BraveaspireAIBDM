@@ -5,7 +5,10 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker
-from .models import Base, Company, Contact, Outreach, FollowUp, User
+from .models import (
+    Base, Company, Contact, Outreach, FollowUp, User,
+    Organization, OrganizationUser, AILog, AuditLog,
+)
 
 log = logging.getLogger(__name__)
 
@@ -165,18 +168,66 @@ def init_db():
     os.makedirs(os.path.join(BASE_DIR, "logs"), exist_ok=True)
     os.makedirs(os.path.join(BASE_DIR, "vector_db"), exist_ok=True)
 
-    # Create all tables (SQL Server safe — uses CREATE TABLE IF NOT EXISTS equivalent)
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception as e:
-        import logging
-        logging.warning(f"DB create_all warning: {e}")
+    # Schema management:
+    #   • Fresh DB      → run migrations from 0001 forward.
+    #   • Legacy DB     → stamp head (adopt current schema) then future upgrades apply.
+    #   • Alembic broken/missing → fall back to Base.metadata.create_all() so dev still works.
+    _run_migrations()
 
-    # SQLite-only column migrations (not needed for SQL Server — schema is correct from the start)
+    # SQLite-only column migrations for very old dev DBs that predate Alembic
+    # and are still missing model columns. Idempotent (each ALTER swallows the
+    # "column already exists" error). Kept as a belt-and-braces for dev only.
     if _is_sqlite:
         _sqlite_migrate()
 
     _seed_admin()
+    _bootstrap_default_org()
+
+
+def _run_migrations():
+    """Bring the DB schema up to head via Alembic; fall back to create_all on failure."""
+    try:
+        from alembic.config import Config
+        from alembic import command
+        from alembic.script import ScriptDirectory
+        from alembic.runtime.migration import MigrationContext
+
+        alembic_cfg = Config(os.path.join(BASE_DIR, "alembic.ini"))
+        # env.py already imports DATABASE_URL from this module, so no override needed.
+
+        # Detect pre-Alembic databases: tables exist but alembic_version doesn't.
+        with engine.connect() as conn:
+            mc = MigrationContext.configure(conn)
+            current_rev = mc.get_current_revision()
+
+        script = ScriptDirectory.from_config(alembic_cfg)
+        head_rev = script.get_current_head()
+
+        if current_rev is None:
+            # Either brand new, or a legacy DB with existing tables.
+            from sqlalchemy import inspect
+            insp = inspect(engine)
+            existing_tables = set(insp.get_table_names())
+            # Any of our tables already there? Then this is a legacy dev DB
+            # and we STAMP head instead of trying to re-create tables.
+            model_tables = set(Base.metadata.tables.keys())
+            if existing_tables & model_tables:
+                log.info("Alembic: existing schema detected → stamp head (%s)", head_rev)
+                command.stamp(alembic_cfg, "head")
+            else:
+                log.info("Alembic: empty DB → upgrade head (%s)", head_rev)
+                command.upgrade(alembic_cfg, "head")
+        elif current_rev != head_rev:
+            log.info("Alembic: upgrading %s → %s", current_rev, head_rev)
+            command.upgrade(alembic_cfg, "head")
+        else:
+            log.debug("Alembic: schema at head (%s)", head_rev)
+    except Exception as e:
+        log.warning("Alembic run failed (%s) — falling back to Base.metadata.create_all()", e)
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception as e2:
+            log.warning("create_all fallback also failed: %s", e2)
 
 
 def _sqlite_migrate():
@@ -189,6 +240,10 @@ def _sqlite_migrate():
         ("companies", "created_by",    "INTEGER"),
         ("companies", "linkedin_url",  "TEXT"),
         ("companies", "funding_stage", "TEXT"),
+        ("companies", "funding_amount","TEXT"),
+        ("companies", "founded_year",  "INTEGER"),
+        ("companies", "crunchbase_url","TEXT"),
+        ("companies", "apollo_id",     "TEXT"),
         ("companies", "job_openings",  "INTEGER DEFAULT 0"),
         ("users",     "mobile",        "TEXT"),
         ("users",     "totp_secret",   "TEXT"),
@@ -198,6 +253,14 @@ def _sqlite_migrate():
         ("users",     "lockout_until", "TEXT"),
         ("users",     "created_by_id", "INTEGER"),
         ("users",     "department",    "TEXT"),
+        # Phase 1 (multi-tenancy) — nullable organization_id on every tenant table
+        ("companies", "organization_id", "INTEGER"),
+        ("contacts",  "organization_id", "INTEGER"),
+        ("outreach",  "organization_id", "INTEGER"),
+        ("followups", "organization_id", "INTEGER"),
+        ("ai_logs",   "organization_id", "INTEGER"),
+        ("ai_logs",   "user_id",         "INTEGER"),
+        ("audit_logs","organization_id", "INTEGER"),
     ]
     with engine.connect() as conn:
         for table, col, col_type in migrations:
@@ -208,6 +271,51 @@ def _sqlite_migrate():
                 pass  # column already exists
 
 
+def _bootstrap_default_org():
+    """
+    Phase 1 (Chunk 1) — one-time multi-tenancy backfill.
+
+    If no Organization exists yet:
+      1. Create a "Default Organization".
+      2. Attach every existing user to it (as OrganizationUser rows).
+      3. Backfill organization_id on every legacy Company/Contact/Outreach/
+         FollowUp/AILog/AuditLog row so they belong to this default tenant.
+
+    Runs on every init_db(), but is a no-op if an Organization already exists.
+    Once Chunk 2 makes organization_id required, this remains as a safety net
+    for older databases.
+    """
+    with get_db() as db:
+        if db.query(Organization).count() > 0:
+            return  # already bootstrapped
+
+        default_org = Organization(name="Default Organization", slug="default", status="active")
+        db.add(default_org)
+        db.flush()  # get default_org.id
+
+        # Attach every user to the default org, mirroring their global role.
+        users = db.query(User).all()
+        for u in users:
+            db.add(OrganizationUser(
+                organization_id=default_org.id,
+                user_id=u.id,
+                role=u.role or "sales_executive",
+                status="active",
+            ))
+
+        # Backfill organization_id on all pre-existing tenant rows.
+        for model in (Company, Contact, Outreach, FollowUp, AILog, AuditLog):
+            db.query(model).filter(model.organization_id.is_(None)).update(
+                {model.organization_id: default_org.id},
+                synchronize_session=False,
+            )
+
+        log.info(
+            "Bootstrapped Default Organization (id=%s). Attached %d users, backfilled tenant rows.",
+            default_org.id, len(users),
+        )
+
+
 def _seed_admin():
     """Create default super_admin user if no users exist."""
     with get_db() as db:
@@ -215,8 +323,8 @@ def _seed_admin():
             import bcrypt as _bcrypt
             admin = User(
                 email="admin@braveaspire.com",
-                mobile="+910000000000",
-                password_hash=_bcrypt.hashpw(b"Admin@123!", _bcrypt.gensalt()).decode(),
+                mobile="+91-7981454752",
+                password_hash=_bcrypt.hashpw(b"Vikranth@82", _bcrypt.gensalt()).decode(),
                 full_name="Super Admin",
                 role="super_admin",
                 plan="agency",

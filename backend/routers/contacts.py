@@ -5,10 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
 from app.services.crm_service import CRMService
-from backend.auth import get_current_user
+from backend.auth import get_scoped_crm_for
 
 api = APIRouter(prefix="/api/contacts", tags=["contacts"])
-crm = CRMService()
 
 
 class ContactCreate(BaseModel):
@@ -26,18 +25,23 @@ class ContactCreate(BaseModel):
 def list_contacts(
     company_id: Optional[int] = Query(None),
     search: str = Query(""),
-    user=Depends(get_current_user),
+    crm: CRMService = Depends(get_scoped_crm_for("contact.read")),
 ):
     return crm.get_contacts(company_id=company_id, search=search)
 
 
 @api.post("/", status_code=201)
-def create_contact(body: ContactCreate, user=Depends(get_current_user)):
-    return crm.add_contact(body.model_dump())
+def create_contact(body: ContactCreate,
+                   crm: CRMService = Depends(get_scoped_crm_for("contact.create"))):
+    result = crm.add_contact(body.model_dump())
+    if not result:
+        raise HTTPException(404, "Company not found in your organization")
+    return result
 
 
 @api.put("/{contact_id}")
-def update_contact(contact_id: int, body: dict, user=Depends(get_current_user)):
+def update_contact(contact_id: int, body: dict,
+                   crm: CRMService = Depends(get_scoped_crm_for("contact.update"))):
     result = crm.update_contact(contact_id, body)
     if not result:
         raise HTTPException(404, "Contact not found")

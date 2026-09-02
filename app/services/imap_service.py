@@ -36,17 +36,20 @@ class IMAPService:
     def check_replies(self, days_back: int = 7) -> int:
         """
         Scan inbox for replies to tracked outreach emails.
-        Returns count of newly detected replies.
+
+        Phase 5 threading: primary match on `In-Reply-To` / `References`
+        against the outbound `Outreach.message_id_header`. That gives us a
+        real thread match (not a subject guess). Subject match is kept as a
+        fallback for pre-Phase-5 sends that never got a Message-ID stamped.
         """
         from ..database.db import get_db
-        from ..database.models import Outreach, Contact
+        from ..database.models import Outreach
 
         try:
             mail    = self._connect()
             count   = 0
             mail.select("INBOX")
 
-            # Search since N days ago
             since_date = (datetime.utcnow() - timedelta(days=days_back)).strftime("%d-%b-%Y")
             _, msg_ids = mail.search(None, f'(SINCE "{since_date}")')
 
@@ -58,11 +61,19 @@ class IMAPService:
                 sent_outreach = db.query(Outreach).filter(
                     Outreach.status.in_(["Sent", "Opened"])
                 ).all()
-                # Build subject → outreach map
+
+                # Primary index: outbound Message-ID → Outreach.
+                mid_map: dict[str, Outreach] = {
+                    o.message_id_header.strip("<>"): o
+                    for o in sent_outreach
+                    if o.message_id_header
+                }
+                # Fallback index: normalized subject → Outreach.
                 subj_map: dict[str, Outreach] = {}
                 for o in sent_outreach:
                     if o.subject:
-                        clean = re.sub(r"^(Re:|Fwd?:|FW:)\s*", "", o.subject, flags=re.I).strip().lower()
+                        clean = re.sub(r"^(Re:|Fwd?:|FW:)\s*", "", o.subject,
+                                       flags=re.I).strip().lower()
                         subj_map[clean] = o
 
                 for mid in msg_ids[0].split():
@@ -71,18 +82,36 @@ class IMAPService:
                         raw     = data[0][1]
                         msg     = email.message_from_bytes(raw)
                         subject = _decode_header_str(msg.get("Subject", ""))
-                        sender  = msg.get("From", "")
 
-                        clean_subj = re.sub(r"^(Re:|Fwd?:|FW:)\s*", "", subject,
-                                             flags=re.I).strip().lower()
+                        # 1. Try In-Reply-To / References for a real match.
+                        matched: Optional[Outreach] = None
+                        for header in ("In-Reply-To", "References"):
+                            val = (msg.get(header) or "").strip()
+                            if not val:
+                                continue
+                            for ref in re.findall(r"<([^>]+)>", val):
+                                if ref in mid_map:
+                                    matched = mid_map[ref]
+                                    break
+                            if matched:
+                                break
 
-                        if clean_subj in subj_map:
-                            outreach = subj_map[clean_subj]
-                            if outreach.status in ("Sent", "Opened"):
-                                outreach.status     = "Replied"
-                                outreach.replied_at = datetime.utcnow()
-                                count += 1
-                                logger.info(f"Reply detected for outreach #{outreach.id}: {subject}")
+                        # 2. Fallback: subject match.
+                        if matched is None:
+                            clean_subj = re.sub(r"^(Re:|Fwd?:|FW:)\s*", "", subject,
+                                                flags=re.I).strip().lower()
+                            matched = subj_map.get(clean_subj)
+
+                        if matched and matched.status in ("Sent", "Opened"):
+                            matched.status     = "Replied"
+                            matched.replied_at = datetime.utcnow()
+                            # Record the inbound Message-ID for thread continuity.
+                            in_mid = (msg.get("Message-ID") or "").strip()
+                            if in_mid and not matched.in_reply_to:
+                                matched.in_reply_to = in_mid
+                            count += 1
+                            logger.info("Reply detected for outreach #%s: %s",
+                                        matched.id, subject)
 
                     except Exception as e:
                         logger.debug(f"Email parse error: {e}")

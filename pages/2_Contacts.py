@@ -6,8 +6,7 @@ import streamlit as st
 import pandas as pd
 import json, re
 from app.database.db import init_db
-from app.services.crm_service import CRMService
-from app.utils.helpers import load_settings, get_ai_service
+from app.utils.helpers import load_settings, get_ai_service, get_scoped_crm
 
 st.set_page_config(page_title="Contacts — BraveAspire", page_icon="👤", layout="wide")
 _apply_theme()
@@ -18,7 +17,7 @@ from app.utils.rbac import require_auth, require_permission
 _current_user = require_auth()
 require_permission("contact.read", _current_user)
 
-crm = CRMService()
+crm = get_scoped_crm(st)
 
 # ── CSS (divs/spans only) ─────────────────────────────────────────────────────
 st.markdown("""

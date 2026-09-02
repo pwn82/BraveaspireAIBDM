@@ -1,0 +1,33 @@
+[run]
+source = app,backend
+branch = True
+omit =
+    */__pycache__/*
+    tests/*
+    # Skip Streamlit pages — not exercisable without a Streamlit runtime.
+    pages/*
+    streamlit_app.py
+    # Skip Alembic migrations — schema, not app logic.
+    alembic/*
+    # Data-collection scripts.
+    scripts/*
+    # Long-tail unused agents to keep the score honest — flip these on when tested.
+    app/agents/proposal_agent.py
+    app/agents/scraper_agent.py
+    app/agents/personalization_agent.py
+    app/agents/inbox_agent.py
+    app/agents/lead_discovery_agent.py
+    app/agents/company_analyzer_agent.py
+    app/agents/company_scraping_agent.py
+    app/services/scraper_service.py
+    app/services/otp_service.py
+
+[report]
+show_missing = False
+skip_empty = True
+precision = 1
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:

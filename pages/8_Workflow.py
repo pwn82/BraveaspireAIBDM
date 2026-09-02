@@ -4,8 +4,7 @@ from app.utils.theme import apply_theme as _apply_theme
 
 import streamlit as st
 from app.database.db import init_db
-from app.services.crm_service import CRMService
-from app.utils.helpers import load_settings, get_ai_service
+from app.utils.helpers import load_settings, get_ai_service, get_scoped_crm
 
 st.set_page_config(page_title="AI Workflow — BraveAspire", page_icon="🔄", layout="wide")
 _apply_theme()
@@ -16,7 +15,7 @@ from app.utils.rbac import require_auth, require_permission
 _current_user = require_auth()
 require_permission("workflow.run", _current_user)
 
-crm = CRMService()
+crm = get_scoped_crm(st)
 st.title("🔄 LangGraph BDM Workflow")
 st.caption("Full automated pipeline: Discover → Analyze → Find Contacts → Generate Emails → HITL Approve → Send → CRM → Follow-ups")
 

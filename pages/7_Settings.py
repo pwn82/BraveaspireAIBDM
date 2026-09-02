@@ -5,10 +5,9 @@ from app.utils.theme import apply_theme as _apply_theme
 import streamlit as st
 import pandas as pd
 from app.database.db import init_db, seed_demo_data
-from app.services.crm_service import CRMService
 from app.services.auth_service import get_audit_logs, get_all_users
 from app.services.billing_service import is_configured as stripe_configured
-from app.utils.helpers import load_settings, get_ai_service, send_email
+from app.utils.helpers import load_settings, get_ai_service, send_email, get_scoped_crm
 
 st.set_page_config(page_title="Settings — BraveAspire", page_icon="⚙️", layout="wide")
 _apply_theme()
@@ -30,9 +29,21 @@ tab_ai, tab_email, tab_tracking, tab_billing, tab_apikeys, tab_profile, tab_secu
 # ─── AI ───────────────────────────────────────────────────────────────────────
 with tab_ai:
     st.subheader("AI Model Configuration")
-    provider = st.radio("Provider", ["ollama", "groq"], horizontal=True,
-                         index=0 if st.session_state.get("ai_provider","ollama")=="ollama" else 1,
-                         format_func=lambda x: "🖥️ Ollama (Local)" if x=="ollama" else "☁️ Groq (Cloud)")
+    _providers = ["ollama", "groq", "openai", "anthropic"]
+    _provider_labels = {
+        "ollama":    "🖥️ Ollama (Local)",
+        "groq":      "☁️ Groq",
+        "openai":    "🤖 OpenAI",
+        "anthropic": "🧠 Anthropic",
+    }
+    _cur_provider = st.session_state.get("ai_provider", "ollama")
+    if _cur_provider not in _providers:
+        _cur_provider = "ollama"
+    provider = st.radio(
+        "Provider", _providers, horizontal=True,
+        index=_providers.index(_cur_provider),
+        format_func=lambda x: _provider_labels[x],
+    )
     st.session_state["ai_provider"] = provider
 
     st.divider()
@@ -53,7 +64,8 @@ with tab_ai:
             st.session_state["ollama_model"] = mdl
 
         st.info("```\nollama pull llama3\nollama pull mistral\nollama pull deepseek-coder\n```")
-    else:
+
+    elif provider == "groq":
         key = st.text_input("Groq API Key", value=st.session_state.get("groq_api_key",""), type="password",
                               help="console.groq.com")
         st.session_state["groq_api_key"] = key
@@ -69,6 +81,41 @@ with tab_ai:
         mdl = st.selectbox("Model", _groq_models, index=_groq_idx,
                            help="llama-3.3-70b-versatile = best quality | llama-3.1-8b-instant = fastest")
         st.session_state["groq_model"] = mdl
+
+    elif provider == "openai":
+        key = st.text_input("OpenAI API Key", value=st.session_state.get("openai_api_key",""),
+                            type="password", help="platform.openai.com/api-keys")
+        st.session_state["openai_api_key"] = key
+        _openai_models = [
+            "gpt-4o-mini",     # cheap default
+            "gpt-4o",
+            "gpt-4-turbo",
+            "gpt-4",
+            "gpt-3.5-turbo",
+        ]
+        _cur_oa = st.session_state.get("openai_model", "gpt-4o-mini")
+        _oa_idx = _openai_models.index(_cur_oa) if _cur_oa in _openai_models else 0
+        mdl = st.selectbox("Model", _openai_models, index=_oa_idx,
+                           help="gpt-4o-mini = cheapest | gpt-4o = best general | gpt-4-turbo = long context")
+        st.session_state["openai_model"] = mdl
+
+    else:  # anthropic
+        key = st.text_input("Anthropic API Key", value=st.session_state.get("anthropic_api_key",""),
+                            type="password", help="console.anthropic.com")
+        st.session_state["anthropic_api_key"] = key
+        _anth_models = [
+            "claude-haiku-4-5-20251001",   # fastest, cheapest (Haiku 4.5)
+            "claude-sonnet-5",             # balanced (Sonnet 5)
+            "claude-opus-5",               # top quality (Opus 5)
+            "claude-3-5-sonnet-latest",    # older stable
+            "claude-3-5-haiku-latest",
+        ]
+        _cur_an = st.session_state.get("anthropic_model", "claude-haiku-4-5-20251001")
+        if _cur_an not in _anth_models:
+            _anth_models.insert(0, _cur_an)
+        mdl = st.selectbox("Model", _anth_models, index=_anth_models.index(_cur_an),
+                           help="Haiku 4.5 = fast/cheap | Sonnet 5 = balanced | Opus 5 = best quality")
+        st.session_state["anthropic_model"] = mdl
 
     st.divider()
     col_test, col_save = st.columns(2)
@@ -99,11 +146,15 @@ with tab_ai:
                     result.append(f"{key}={value}\n")
                 return result
 
-            _lines = _set_env(_lines, "AI_PROVIDER",   st.session_state.get("ai_provider","ollama"))
-            _lines = _set_env(_lines, "GROQ_API_KEY",  st.session_state.get("groq_api_key",""))
-            _lines = _set_env(_lines, "GROQ_MODEL",    st.session_state.get("groq_model","llama3-70b-8192"))
-            _lines = _set_env(_lines, "OLLAMA_BASE_URL",st.session_state.get("ollama_url","http://localhost:11434"))
-            _lines = _set_env(_lines, "OLLAMA_MODEL",  st.session_state.get("ollama_model","llama3"))
+            _lines = _set_env(_lines, "AI_PROVIDER",      st.session_state.get("ai_provider","ollama"))
+            _lines = _set_env(_lines, "GROQ_API_KEY",     st.session_state.get("groq_api_key",""))
+            _lines = _set_env(_lines, "GROQ_MODEL",       st.session_state.get("groq_model","llama-3.3-70b-versatile"))
+            _lines = _set_env(_lines, "OLLAMA_BASE_URL",  st.session_state.get("ollama_url","http://localhost:11434"))
+            _lines = _set_env(_lines, "OLLAMA_MODEL",     st.session_state.get("ollama_model","llama3"))
+            _lines = _set_env(_lines, "OPENAI_API_KEY",   st.session_state.get("openai_api_key",""))
+            _lines = _set_env(_lines, "OPENAI_MODEL",     st.session_state.get("openai_model","gpt-4o-mini"))
+            _lines = _set_env(_lines, "ANTHROPIC_API_KEY",st.session_state.get("anthropic_api_key",""))
+            _lines = _set_env(_lines, "ANTHROPIC_MODEL",  st.session_state.get("anthropic_model","claude-haiku-4-5-20251001"))
             with open(_env_path, "w") as _f:
                 _f.writelines(_lines)
             st.success(f"✅ Saved to {_env_path}")
@@ -441,7 +492,7 @@ with tab_security:
 # ─── Database ─────────────────────────────────────────────────────────────────
 with tab_db:
     st.subheader("Database Management")
-    crm   = CRMService()
+    crm   = get_scoped_crm(st)
     stats = crm.get_pipeline_stats()
     c1, c2, c3 = st.columns(3)
     c1.metric("Companies", stats["total_companies"])
@@ -455,11 +506,12 @@ with tab_db:
 
     if st.button("Re-index Vector DB"):
         from app.services.vector_service import VectorService
-        vs = VectorService()
+        from app.utils.rbac import get_current_org_id
+        vs = VectorService(organization_id=get_current_org_id())
         if vs.is_available():
             companies = crm.get_companies()
             vs.index_all(companies)
-            st.success(f"Indexed {len(companies)} companies in ChromaDB!")
+            st.success(f"Indexed {len(companies)} companies in ChromaDB (this org only)!")
         else:
             st.warning("ChromaDB not available. Install: `pip install chromadb`")
 

@@ -7,8 +7,7 @@ import pandas as pd
 from datetime import datetime
 
 from app.database.db import init_db, seed_demo_data
-from app.services.crm_service import CRMService
-from app.utils.helpers import load_settings, status_emoji
+from app.utils.helpers import load_settings, status_emoji, get_scoped_crm
 from app.utils.theme import apply_theme as _apply_theme
 
 st.set_page_config(
@@ -130,7 +129,7 @@ with st.sidebar:
             st.rerun()
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
-crm   = CRMService()
+crm   = get_scoped_crm(st)
 stats = crm.get_pipeline_stats()
 hour  = datetime.now().hour
 greet = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")

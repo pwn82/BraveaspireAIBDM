@@ -4,12 +4,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
 from app.services.crm_service import CRMService
-from backend.auth import get_current_user
+from backend.auth import get_scoped_crm_for
 
 api = APIRouter(prefix="/api/outreach", tags=["outreach"])
-crm = CRMService()
 
 
 class OutreachCreate(BaseModel):
@@ -29,21 +27,26 @@ class OutreachUpdate(BaseModel):
 def list_outreach(
     status: str = Query(""),
     contact_id: Optional[int] = Query(None),
-    user=Depends(get_current_user),
+    crm: CRMService = Depends(get_scoped_crm_for("outreach.read")),
 ):
     return crm.get_outreach(status=status, contact_id=contact_id)
 
 
 @api.post("/", status_code=201)
-def create_outreach(body: OutreachCreate, user=Depends(get_current_user)):
+def create_outreach(body: OutreachCreate,
+                    crm: CRMService = Depends(get_scoped_crm_for("outreach.create"))):
     import uuid
     data = body.model_dump()
     data["tracking_id"] = str(uuid.uuid4())
-    return crm.create_outreach(data)
+    result = crm.create_outreach(data)
+    if not result:
+        raise HTTPException(404, "Contact not found in your organization")
+    return result
 
 
 @api.put("/{outreach_id}")
-def update_outreach(outreach_id: int, body: OutreachUpdate, user=Depends(get_current_user)):
+def update_outreach(outreach_id: int, body: OutreachUpdate,
+                    crm: CRMService = Depends(get_scoped_crm_for("outreach.create"))):
     data   = {k: v for k, v in body.model_dump().items() if v is not None}
     result = crm.update_outreach(outreach_id, data)
     if not result:
@@ -52,5 +55,6 @@ def update_outreach(outreach_id: int, body: OutreachUpdate, user=Depends(get_cur
 
 
 @api.get("/followups")
-def list_followups(status: str = Query(""), user=Depends(get_current_user)):
+def list_followups(status: str = Query(""),
+                   crm: CRMService = Depends(get_scoped_crm_for("followup.read"))):
     return crm.get_followups(status=status)
