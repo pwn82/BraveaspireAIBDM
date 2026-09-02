@@ -15,8 +15,11 @@ services:
       - ./vector_db:/app/vector_db
     env_file:
       - .env
-    environment:
-      - DATABASE_URL=sqlite:////app/data/bdm.db
+    # DATABASE_URL / REDIS_URL come from .env, NOT hardcoded here — a
+    # hardcoded `environment:` entry for the same key overrides env_file,
+    # which previously forced SQLite even if .env pointed at Postgres.
+    # Set DATABASE_URL in .env: leave unset/sqlite for dev, or point at
+    # Postgres (see NEON_SETUP.md) for anything beyond single-user local use.
     depends_on:
       - api
     restart: unless-stopped
@@ -33,12 +36,12 @@ services:
       - ./logs:/app/logs
     env_file:
       - .env
-    environment:
-      - DATABASE_URL=sqlite:////app/data/bdm.db
     restart: unless-stopped
 
   # ── Optional: PostgreSQL ───────────────────────────────────────────────────
-  # Uncomment to use PostgreSQL instead of SQLite
+  # Local/self-hosted alternative to a managed instance (Neon/Supabase/Azure —
+  # see NEON_SETUP.md / AZURE_SQL_SETUP.md). Uncomment this block AND set in
+  # .env:  DATABASE_URL=postgresql://bdm:bdmpassword@postgres:5432/bdm
   # postgres:
   #   image: postgres:16-alpine
   #   container_name: braveaspire_postgres
@@ -50,7 +53,32 @@ services:
   #     - "5432:5432"
   #   volumes:
   #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U bdm"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   restart: unless-stopped
+
+  # ── Optional: Redis ─────────────────────────────────────────────────────────
+  # Distributed rate limiting + scheduler coordination (app/services/
+  # redis_client.py). The app runs correctly without this — each service
+  # degrades to single-process behavior when REDIS_URL is unset. Uncomment
+  # this block AND set in .env:  REDIS_URL=redis://redis:6379/0
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: braveaspire_redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
   #   restart: unless-stopped
 
 volumes:
   postgres_data:
+  redis_data:

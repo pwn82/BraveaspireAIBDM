@@ -20,6 +20,7 @@ def load_settings(st):
         "openai_api_key":    os.getenv("OPENAI_API_KEY",    ""),
         "anthropic_model":   os.getenv("ANTHROPIC_MODEL",   "claude-haiku-4-5-20251001"),
         "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
+        "anthropic_workspace_id": os.getenv("ANTHROPIC_WORKSPACE_ID", ""),
         # Email / SMTP
         "smtp_host":       os.getenv("SMTP_HOST",          "smtp.gmail.com"),
         "smtp_port":       int(os.getenv("SMTP_PORT",      "587")),
@@ -94,6 +95,7 @@ def get_ai_service(st):
         openai_api_key=st.session_state.get("openai_api_key", ""),
         anthropic_model=st.session_state.get("anthropic_model", "claude-haiku-4-5-20251001"),
         anthropic_api_key=st.session_state.get("anthropic_api_key", ""),
+        anthropic_workspace_id=st.session_state.get("anthropic_workspace_id", ""),
     )
 
 

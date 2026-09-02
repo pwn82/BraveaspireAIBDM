@@ -42,6 +42,7 @@ class BDMState(TypedDict):
     services:       str
     # Stage outputs
     companies:           list
+    discovery_status:    str  # SUCCESS | PARTIAL | FAILED — see _lead_discovery_node
     analyzed_companies:  list
     contacts:            list
     generated_emails:    list
@@ -63,7 +64,7 @@ def _default_state() -> BDMState:
         query="", filters={}, count=5,
         sender_name="BraveAspire Team", sender_company="BraveAspire",
         services="custom software development & AI solutions",
-        companies=[], analyzed_companies=[], contacts=[], generated_emails=[],
+        companies=[], discovery_status="", analyzed_companies=[], contacts=[], generated_emails=[],
         human_feedback={}, approved_emails=[],
         saved_company_ids=[], sent_outreach_ids=[], scheduled_followup_ids=[],
         current_step="start", step_logs=[], errors=[],
@@ -73,12 +74,21 @@ def _default_state() -> BDMState:
 # ── Node functions ─────────────────────────────────────────────────────────────
 
 def _lead_discovery_node(state: BDMState, ai_service, crm_service) -> dict:
+    """
+    P0 hardening: this node used to silently blend "AI discovered these
+    companies" and "CRM fallback returned these existing companies" into the
+    same `companies` list with no way for the caller to tell which happened.
+    A request for 20 fresh companies could silently come back as 20
+    unrelated CRM records with no indication anything degraded. `discovery_status`
+    makes that explicit: SUCCESS (AI), PARTIAL (CRM fallback used), FAILED (neither).
+    """
     logger.info("[BDM] lead_discovery started")
     logs   = list(state.get("step_logs", []))
     errors = list(state.get("errors", []))
     logs.append("🔍 Lead Discovery: finding companies with AI...")
 
     companies = []
+    ai_succeeded = False
 
     # ── Try AI discovery first ────────────────────────────────────────────────
     try:
@@ -90,7 +100,10 @@ def _lead_discovery_node(state: BDMState, ai_service, crm_service) -> dict:
             filters=state.get("filters", {}),
         )
         if companies:
+            ai_succeeded = True
             logs.append(f"✅ AI discovered {len(companies)} companies")
+        else:
+            logs.append("⚠️ AI returned no verifiable companies, switching to CRM fallback...")
     except Exception as e:
         err_msg = f"AI lead discovery failed: {e}"
         logger.warning(err_msg)
@@ -98,6 +111,8 @@ def _lead_discovery_node(state: BDMState, ai_service, crm_service) -> dict:
         logs.append(f"⚠️ AI unavailable ({type(e).__name__}), switching to CRM fallback...")
 
     # ── Fallback: pull matching companies from existing CRM ───────────────────
+    # NOTE: this returns *existing CRM records*, not new discovery results —
+    # callers must check discovery_status before treating `companies` as fresh.
     if not companies:
         try:
             query_str = state.get("query", "")
@@ -141,11 +156,19 @@ def _lead_discovery_node(state: BDMState, ai_service, crm_service) -> dict:
             errors.append(err_msg2)
             logs.append(f"❌ {err_msg2}")
 
+    if ai_succeeded:
+        discovery_status = "SUCCESS"
+    elif companies:
+        discovery_status = "PARTIAL"   # CRM fallback — not fresh AI discovery
+    else:
+        discovery_status = "FAILED"
+
     return {
-        "companies":    companies,
-        "step_logs":    logs,
-        "errors":       errors,
-        "current_step": "company_analysis",
+        "companies":        companies,
+        "discovery_status": discovery_status,
+        "step_logs":        logs,
+        "errors":           errors,
+        "current_step":     "company_analysis",
     }
 
 
@@ -185,21 +208,28 @@ def _company_analysis_node(state: BDMState, ai_service, crm_service) -> dict:
 
 
 def _contact_finder_node(state: BDMState, ai_service, crm_service) -> dict:
+    """
+    Find decision-makers for each analyzed company.
+
+    P0 hardening: this node used to ask the AI to *invent* an email address
+    (e.g. "jane@{domain}") and, if that failed too, synthesize a
+    "cto@{domain}" placeholder — i.e. it fabricated contact data and treated
+    it as real. It no longer does either. A contact found via AI (name/title
+    only — never an email) is tagged email_status="inferred" and carries no
+    email address; OutreachPolicy refuses to send to such a contact until a
+    human finds/verifies a real address. See app/policies/outreach_policy.py.
+    """
     logger.info("[BDM] contact_finder started")
     logs   = list(state.get("step_logs", []))
     errors = list(state.get("errors", []))
     logs.append("👤 Contact Finder: identifying decision-makers...")
     contacts = []
 
-    import json as _json, re as _re
+    from ..services.ai_gateway import AIGateway
+    from ..schemas.ai_outputs import ContactCandidateList
 
     def _find_contacts_for(company):
         company_name = company.get("name", "") or "Unknown Company"
-        raw_website  = company.get("website", "") or ""
-        # Derive a clean domain from website URL
-        website = raw_website.replace("https://","").replace("http://","").split("/")[0].strip()
-        if not website:
-            website = (company_name.lower().replace(" ","") + ".com") if company_name != "Unknown Company" else "company.com"
         found_cts    = []
 
         # ── 1. DB contacts first (instant, no AI needed) ──────────────────────
@@ -213,6 +243,7 @@ def _contact_finder_node(state: BDMState, ai_service, crm_service) -> dict:
                     "name":         c.get("name", ""),
                     "designation":  c.get("designation", ""),
                     "email":        c.get("email", ""),
+                    "email_status": c.get("email_status", "unknown"),
                     "linkedin":     c.get("linkedin", ""),
                     "company_id":   c.get("id"),
                     "company_name": company_name,
@@ -220,68 +251,43 @@ def _contact_finder_node(state: BDMState, ai_service, crm_service) -> dict:
                 })
             return found_cts, None
 
-        # ── 2. AI fallback — compact prompt ───────────────────────────────────
+        # ── 2. AI: name/title only. NEVER an email address. ───────────────────
         try:
-            domain = website.replace("https://","").replace("http://","").split("/")[0] or "company.com"
-            prompt = (
-                f"List 1-2 decision-makers for {company_name} ({company.get('industry','Tech')}).\n"
-                f"Return ONLY a JSON array, no explanation:\n"
-                f'[{{"name":"Jane Doe","designation":"CTO","email":"jane@{domain}","linkedin":""}}]'
+            gateway = AIGateway(
+                organization_id=crm_service.organization_id, ai=ai_service,
+                agent_name="contact_finder",
             )
-            raw = ai_service.generate(prompt)
-            # Strip markdown fences
-            raw = _re.sub(r"```(?:json)?", "", raw).strip().strip("`")
-            # Extract first [...] block
-            m = _re.search(r'\[.*?\]', raw, _re.DOTALL)
-            raw = m.group(0) if m else raw
-
-            parsed = _json.loads(raw)
-
-            # Normalise: could be a dict (single item) or list
-            if isinstance(parsed, dict):
-                parsed = [parsed]
-
-            for c in parsed[:2]:
-                # Guard: item must be a dict — skip strings or other types
-                if not isinstance(c, dict):
-                    continue
-                contact_entry = {
-                    "name":         str(c.get("name", "Decision Maker")),
-                    "designation":  str(c.get("designation", c.get("title", "CTO"))),
-                    "email":        str(c.get("email", f"cto@{domain}")),
-                    "linkedin":     str(c.get("linkedin", c.get("linkedin_url", ""))),
-                    "company_id":   None,
-                    "company_name": company_name,
-                    "company":      company,
-                }
-                found_cts.append(contact_entry)
-
+            prompt = (
+                f"List 1-2 likely decision-maker titles/names for {company_name} "
+                f"({company.get('industry','Tech')}) based on your general knowledge.\n"
+                f"Do NOT invent or guess an email address — leave it blank.\n"
+                f"If you are not confident a named person exists, use a generic "
+                f"title-only entry with an empty name."
+            )
+            result = gateway.generate_json(prompt, schema=ContactCandidateList)
+            if result.ok and result.parsed:
+                for c in result.parsed.contacts[:2]:
+                    found_cts.append({
+                        "name":         c.name or "Decision Maker",
+                        "designation":  c.designation or "Decision Maker",
+                        "email":        "",              # never AI-guessed
+                        "email_status": "inferred",       # blocks OutreachPolicy until a human finds a real address
+                        "email_source": "ai_guess",
+                        "linkedin":     "",
+                        "company_id":   None,
+                        "company_name": company_name,
+                        "company":      company,
+                    })
+            else:
+                errors.append(f"Contact AI schema_invalid for {company_name}: {result.error}")
         except Exception as e:
-            # AI failed — add a placeholder so the pipeline doesn't stall
-            domain = website.replace("https://","").replace("http://","").split("/")[0] or "company.com"
-            found_cts.append({
-                "name":         "Decision Maker",
-                "designation":  "CTO",
-                "email":        f"cto@{domain}",
-                "linkedin":     "",
-                "company_id":   None,
-                "company_name": company_name,
-                "company":      company,
-            })
-            return found_cts, f"Contact AI failed for {company_name or 'Unknown'}: {e}"
+            errors.append(f"Contact AI failed for {company_name or 'Unknown'}: {e}")
 
         if not found_cts:
-            # AI returned empty / unparseable — add placeholder
-            domain = website.replace("https://","").replace("http://","").split("/")[0] or "company.com"
-            found_cts.append({
-                "name":         "Decision Maker",
-                "designation":  "CTO",
-                "email":        f"cto@{domain}",
-                "linkedin":     "",
-                "company_id":   None,
-                "company_name": company_name,
-                "company":      company,
-            })
+            # No real contact and no usable AI candidate — do NOT synthesize one.
+            # Leave this company without a contact; the pipeline simply won't
+            # generate/send outreach for it instead of inventing a fake target.
+            logger.info("[BDM] no contact found for %s — skipping (no fabrication)", company_name)
 
         return found_cts, None
 
@@ -294,7 +300,9 @@ def _contact_finder_node(state: BDMState, ai_service, crm_service) -> dict:
             if err:
                 errors.append(err)
 
-    logs.append(f"✅ Found {len(contacts)} contacts")
+    inferred = sum(1 for c in contacts if c.get("email_status") == "inferred")
+    logs.append(f"✅ Found {len(contacts)} contacts"
+                + (f" ({inferred} name-only — need human research before outreach)" if inferred else ""))
     return {"contacts": contacts, "step_logs": logs, "errors": errors, "current_step": "email_generator"}
 
 
@@ -325,6 +333,9 @@ def _email_generator_node(state: BDMState, ai_service, crm_service) -> dict:
             subject = result.get("subject", "")
             body    = result.get("body", "")
             cta     = result.get("cta", "")
+            if result.get("_ai_parse_failed"):
+                errors.append(f"Email AI response for {contact_name} could not be validated — "
+                              f"using a generic template; review before sending.")
         except Exception as e:
             errors.append(f"Email AI failed for {contact_name}: {e}")
             subject = f"Quick question about {company_name}'s tech roadmap"
@@ -369,13 +380,27 @@ def _human_review_node(state: BDMState, ai_service, crm_service) -> dict:
 
 
 def _email_sender_node(state: BDMState, ai_service, crm_service) -> dict:
+    """
+    Send human-approved emails through the tenant-scoped safety pipeline
+    (EmailService: suppression / unsubscribe / daily quota / already-sent
+    guard) wrapped in job_service.run_job() for idempotency — a workflow
+    resume or retry can never double-send. This used to call raw SMTP
+    directly, bypassing every one of those checks.
+
+    A contact whose email_status is "inferred" (AI-guessed, no email
+    address) or otherwise blocked by OutreachPolicy is skipped, not sent.
+    """
     logger.info("[BDM] email_sender started")
     logs = list(state.get("step_logs", []))
     logs.append("📤 Email Sender: sending approved emails...")
     sent_ids = []
     try:
         import os
-        from ..utils.helpers import send_email
+        from ..services.email_service import EmailService
+        from ..services import job_service
+        from ..policies.outreach_policy import evaluate_outreach
+
+        org_id = crm_service.organization_id
         smtp = {
             "smtp_host":     os.getenv("SMTP_HOST", "smtp.gmail.com"),
             "smtp_port":     int(os.getenv("SMTP_PORT", "587")),
@@ -384,25 +409,84 @@ def _email_sender_node(state: BDMState, ai_service, crm_service) -> dict:
             "from_email":    os.getenv("FROM_EMAIL", ""),
             "from_name":     os.getenv("FROM_NAME", "BraveAspire AI BDM"),
         }
-        smtp_ready = bool(smtp["smtp_user"])
 
         for email_item in state.get("approved_emails", []):
-            to = email_item.get("contact", {}).get("email", "")
-            if to and smtp_ready:
-                ok, _ = send_email(to, email_item["subject"], email_item["body"], smtp)
-                status = "Sent" if ok else "Draft"
-            else:
-                status = "Draft"   # No SMTP configured — save as draft
-            sent_ids.append({"email": email_item, "status": status})
+            contact = email_item.get("contact", {})
+            to = contact.get("email", "")
+            decision = evaluate_outreach(
+                organization_id=org_id, contact_email=to,
+                contact_email_status=contact.get("email_status", "unknown"),
+            )
+            if not org_id or not decision.allowed:
+                sent_ids.append({"email": email_item, "status": "Blocked",
+                                  "reason": decision.reason or "no_organization_context"})
+                continue
+
+            # Create (or reuse) the CRM contact + outreach row before sending
+            # so we have a stable outreach_id for idempotency + already-sent.
+            crm_contacts = crm_service.get_contacts(search=contact.get("name", ""))
+            contact_id = crm_contacts[0]["id"] if crm_contacts else None
+            if not contact_id:
+                company_name = contact.get("company_name", "")
+                companies = crm_service.get_companies(search=company_name)
+                company_id = companies[0]["id"] if companies else None
+                if company_id:
+                    saved_ct = crm_service.add_contact({
+                        "company_id": company_id, "name": contact.get("name", ""),
+                        "designation": contact.get("designation", ""),
+                        "email": to, "verified": False,
+                        "email_status": contact.get("email_status", "unknown"),
+                        "email_source": contact.get("email_source"),
+                    })
+                    contact_id = saved_ct["id"] if saved_ct else None
+            if not contact_id:
+                sent_ids.append({"email": email_item, "status": "Blocked", "reason": "no_contact_record"})
+                continue
+
+            out_rec = crm_service.create_outreach({
+                "contact_id": contact_id, "subject": email_item["subject"],
+                "body": email_item["body"], "status": "Draft",
+            })
+            if not out_rec:
+                sent_ids.append({"email": email_item, "status": "Blocked", "reason": "outreach_create_failed"})
+                continue
+
+            outcome = job_service.run_job(
+                workflow_name="email_send",
+                idempotency_key=f"outreach:{out_rec['id']}",
+                fn=lambda oid=out_rec["id"], rcpt=to, subj=email_item["subject"], body=email_item["body"]:
+                    _send_via_email_service(org_id, rcpt, subj, body, smtp, oid),
+                organization_id=org_id,
+            )
+            status = "Sent" if outcome.outcome in ("succeeded", "skipped_duplicate") else "Draft"
+            sent_ids.append({"email": email_item, "status": status, "outreach_id": out_rec["id"]})
 
         sent_count = sum(1 for s in sent_ids if s["status"] == "Sent")
-        draft_count = sum(1 for s in sent_ids if s["status"] == "Draft")
-        logs.append(f"✅ Sent: {sent_count}, Saved as Draft: {draft_count}")
+        blocked_count = sum(1 for s in sent_ids if s["status"] == "Blocked")
+        draft_count = len(sent_ids) - sent_count - blocked_count
+        logs.append(f"✅ Sent: {sent_count}, Draft: {draft_count}, Blocked (policy): {blocked_count}")
         return {"sent_outreach_ids": sent_ids, "step_logs": logs, "current_step": "crm_updater"}
     except Exception as e:
         logs.append(f"❌ Email sender error: {e}")
         return {"sent_outreach_ids": [], "step_logs": logs,
                 "errors": state.get("errors", []) + [str(e)], "current_step": "crm_updater"}
+
+
+def _send_via_email_service(org_id, to_email, subject, body, smtp_cfg, outreach_id):
+    """job_service.run_job target — raises on retryable failure so run_job
+    schedules a retry; returns a plain dict result on success/terminal-skip."""
+    from ..services.email_service import EmailService
+    result = EmailService(organization_id=org_id).send(
+        to_email=to_email, subject=subject, body=body,
+        smtp_cfg=smtp_cfg, outreach_id=outreach_id,
+    )
+    _TERMINAL_SKIP = {"suppressed", "unsubscribed", "undeliverable",
+                       "already_sent", "quota_exhausted", "smtp_not_configured"}
+    if not result.ok and result.status in _TERMINAL_SKIP:
+        return {"skipped": result.status, "reason": result.reason}
+    if not result.ok:
+        raise RuntimeError(f"send failed [{result.status}]: {result.reason}")
+    return {"message_id": result.message_id}
 
 
 def _crm_updater_node(state: BDMState, ai_service, crm_service) -> dict:
@@ -428,11 +512,18 @@ def _crm_updater_node(state: BDMState, ai_service, crm_service) -> dict:
                 })
                 company_ids.append(saved["id"])
 
-        # Save outreach records
+        # Save outreach records for anything _email_sender_node didn't already
+        # persist. A row with "outreach_id" was already created (and, for
+        # "Sent", already routed through EmailService) there — creating it
+        # again here would produce a duplicate Outreach row for the same send.
+        new_records = 0
         for item in state.get("sent_outreach_ids", []):
+            if item.get("outreach_id"):
+                continue  # already persisted by _email_sender_node
+
             email_item = item.get("email", {})
             contact    = email_item.get("contact", {})
-            status     = item.get("status", "Draft")
+            reason     = item.get("reason", "")
             # Find or create contact in DB
             contacts = crm_service.get_contacts(search=contact.get("name", ""))
             if contacts:
@@ -446,6 +537,8 @@ def _crm_updater_node(state: BDMState, ai_service, crm_service) -> dict:
                         "company_id": company_id, "name": contact.get("name",""),
                         "designation": contact.get("designation",""),
                         "email": contact.get("email",""), "verified": False,
+                        "email_status": contact.get("email_status", "unknown"),
+                        "email_source": contact.get("email_source"),
                     })
                     contact_id = saved_ct["id"]
                 else:
@@ -453,14 +546,15 @@ def _crm_updater_node(state: BDMState, ai_service, crm_service) -> dict:
 
             crm_service.create_outreach({
                 "contact_id": contact_id,
-                "subject":    email_item.get("subject",""),
+                "subject":    (f"[BLOCKED: {reason}] " if reason else "") + email_item.get("subject",""),
                 "body":       email_item.get("body",""),
-                "status":     status,
-                "sent_at":    datetime.utcnow() if status == "Sent" else None,
+                "status":     "Draft",
                 "tracking_id": str(_uuid.uuid4()),
             })
+            new_records += 1
 
-        logs.append(f"✅ Saved {len(company_ids)} companies + {len(state.get('sent_outreach_ids',[]))} outreach records")
+        logs.append(f"✅ Saved {len(company_ids)} companies + {new_records} additional outreach record(s) "
+                    f"(pre-existing sends already recorded)")
         return {"saved_company_ids": company_ids, "step_logs": logs, "current_step": "followup_scheduler"}
     except Exception as e:
         logs.append(f"❌ CRM updater error: {e}")

@@ -236,6 +236,14 @@ class Contact(Base):
     verified    = Column(Boolean, default=False)
     notes       = Column(Text)
     created_at  = Column(DateTime, default=datetime.utcnow)
+    # Contact email verification lifecycle (P0 hardening — see OutreachPolicy).
+    # unknown | inferred | unverified | verified | bounced | suppressed
+    # "inferred" = AI guessed this address (e.g. firstname@domain pattern) and
+    # it must never be used for outreach until a human promotes it.
+    email_status       = Column(String(20), default="unknown", nullable=False)
+    email_source       = Column(String(30), nullable=True)   # manual | ai_guess | scrape | import | verified_api
+    email_confidence   = Column(Float,      nullable=True)
+    email_verified_at  = Column(DateTime,   nullable=True)
 
     company  = relationship("Company", back_populates="contacts")
     outreach = relationship("Outreach", back_populates="contact", cascade="all, delete-orphan")
@@ -272,6 +280,9 @@ class Outreach(Base):
     follow_up_count = Column(Integer, default=0)
     next_followup_at= Column(DateTime)
     created_at      = Column(DateTime, default=datetime.utcnow)
+    # Human-in-the-loop approval trail (OutreachPolicy requires this before send).
+    approved_by     = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at     = Column(DateTime, nullable=True)
 
     contact  = relationship("Contact", back_populates="outreach")
     followups= relationship("FollowUp", back_populates="outreach", cascade="all, delete-orphan")

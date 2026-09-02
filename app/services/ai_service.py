@@ -18,6 +18,7 @@ class AIService:
         openai_api_key: str = "",
         anthropic_model: str = "claude-haiku-4-5-20251001",
         anthropic_api_key: str = "",
+        anthropic_workspace_id: str = "",
     ):
         if provider not in self.SUPPORTED_PROVIDERS:
             provider = "ollama"
@@ -30,6 +31,10 @@ class AIService:
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
         self.anthropic_model = anthropic_model
         self.anthropic_api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        # Some Anthropic Console API keys are scoped to a specific workspace
+        # and are rejected ("anthropic-workspace-id is required") unless this
+        # header is sent. Optional — only set it if you hit that error.
+        self.anthropic_workspace_id = anthropic_workspace_id or os.getenv("ANTHROPIC_WORKSPACE_ID", "")
         self._groq_client = None
         self._openai_client = None
         self._anthropic_client = None
@@ -59,7 +64,10 @@ class AIService:
             if not self.anthropic_api_key:
                 raise ValueError("Anthropic API key not configured. Go to Settings to add it.")
             from anthropic import Anthropic
-            self._anthropic_client = Anthropic(api_key=self.anthropic_api_key)
+            kwargs = {"api_key": self.anthropic_api_key}
+            if self.anthropic_workspace_id:
+                kwargs["default_headers"] = {"anthropic-workspace-id": self.anthropic_workspace_id}
+            self._anthropic_client = Anthropic(**kwargs)
         return self._anthropic_client
 
     # ── Public API ────────────────────────────────────────────────────────────

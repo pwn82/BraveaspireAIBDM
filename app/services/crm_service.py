@@ -239,6 +239,9 @@ class CRMService:
             "name": c.name, "designation": c.designation,
             "email": c.email, "linkedin": c.linkedin,
             "phone": c.phone, "verified": c.verified,
+            "email_status": c.email_status or "unknown",
+            "email_source": c.email_source,
+            "email_confidence": c.email_confidence,
             "notes": c.notes,
             "organization_id": c.organization_id,
             "created_at": c.created_at.strftime("%Y-%m-%d") if c.created_at else "",
@@ -261,6 +264,7 @@ class CRMService:
                 if o.contact:
                     d["contact_name"] = o.contact.name
                     d["contact_email"] = o.contact.email
+                    d["contact_email_status"] = o.contact.email_status or "unknown"
                     if o.contact.company:
                         d["company_name"] = o.contact.company.name
                 result.append(d)
@@ -297,9 +301,11 @@ class CRMService:
             "opened_at": o.opened_at.strftime("%Y-%m-%d %H:%M") if o.opened_at else "",
             "replied_at": o.replied_at.strftime("%Y-%m-%d %H:%M") if o.replied_at else "",
             "follow_up_count": o.follow_up_count,
+            "approved_by": o.approved_by,
+            "approved_at": o.approved_at.strftime("%Y-%m-%d %H:%M") if o.approved_at else "",
             "organization_id": o.organization_id,
             "created_at": o.created_at.strftime("%Y-%m-%d") if o.created_at else "",
-            "contact_name": "", "contact_email": "", "company_name": "",
+            "contact_name": "", "contact_email": "", "contact_email_status": "unknown", "company_name": "",
         }
 
     # ── Follow-ups ─────────────────────────────────────────────────────────────

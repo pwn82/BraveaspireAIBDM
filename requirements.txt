@@ -1,5 +1,9 @@
 # ── Core UI ───────────────────────────────────────────────────────────────────
-streamlit>=1.35.0
+# Upper-bounded: Streamlit >=1.5x rebuilt its server on Starlette and needs a
+# newer Starlette (DEFAULT_EXCLUDED_CONTENT_TYPES in starlette.middleware.gzip)
+# than the <0.40 ceiling pinned below for FastAPI compatibility — an unbounded
+# `>=1.35.0` here resolves to a version that fails to import at all.
+streamlit>=1.35.0,<1.50.0
 plotly>=5.18.0
 pandas>=2.1.0
 numpy>=1.26.0
@@ -57,6 +61,12 @@ twilio>=8.5.0              # SMS OTP delivery
 
 # ── Background Scheduling ─────────────────────────────────────────────────────
 apscheduler>=3.10.0
+
+# ── Redis (optional) ──────────────────────────────────────────────────────────
+redis>=5.0.0               # Distributed rate limiting/locking. Activated via
+                           # REDIS_URL=redis://... — safe to leave unset;
+                           # app/services/redis_client.py degrades to
+                           # single-process behavior without it.
 
 # ── Billing ───────────────────────────────────────────────────────────────────
 stripe>=7.0.0

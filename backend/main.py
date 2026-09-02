@@ -8,9 +8,9 @@ Phase 3 hardening:
     Referrer-Policy, Permissions-Policy, and HSTS when APP_ENV=production).
   • CORS: explicit allowlist (no wildcard when credentials are involved — the
     combination is silently ignored by browsers and gives false security).
-  • Rate limit: in-memory sliding-window per IP. Sufficient for a single
-    uvicorn worker; Phase 4 replaces this with a Redis-backed limiter that
-    survives across workers.
+  • Rate limit: sliding-window per IP, distributed via Redis when REDIS_URL
+    is set (app/services/rate_limiter.py) so it survives across uvicorn
+    workers/replicas; falls back to an in-process window otherwise.
   • JWT payload now carries `organization_id` (Phase 1), so downstream
     dependencies can enforce org isolation without a DB round-trip.
 """
@@ -100,25 +100,16 @@ async def security_headers(request: Request, call_next):
     return response
 
 
-# ── Rate limiting (in-memory, dev-grade) ─────────────────────────────────────
-# Sliding-window per IP. Auth endpoints get a stricter limit than everything else.
-from collections import defaultdict
-import time as _time
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+# Sliding-window per IP. Auth endpoints get a stricter limit than everything
+# else. Distributed via Redis when REDIS_URL is set (see app/services/
+# rate_limiter.py) — without it, `--workers 2` (this file's own uvicorn
+# command) gives each worker its own counters and a client can roughly
+# double its effective limit by spreading requests across workers.
+from app.services.rate_limiter import allow_request as _rl_allow_request
 
-_rate_store: dict[str, list[float]] = defaultdict(list)
 RATE_LIMIT_GENERAL = int(os.getenv("RATE_LIMIT_GENERAL", "100"))  # req/min per IP
 RATE_LIMIT_AUTH    = int(os.getenv("RATE_LIMIT_AUTH",    "10"))   # req/min per IP for auth
-
-
-def _bucket(ip: str, bucket: str, ceiling: int) -> bool:
-    """Return True if the request is under the limit; False if it should be blocked."""
-    key = f"{ip}:{bucket}"
-    now = _time.time()
-    _rate_store[key] = [t for t in _rate_store[key] if now - t < 60]
-    if len(_rate_store[key]) >= ceiling:
-        return False
-    _rate_store[key].append(now)
-    return True
 
 
 @app.middleware("http")
@@ -127,7 +118,7 @@ async def rate_limit(request: Request, call_next):
     is_auth = request.url.path.startswith("/api/auth/")
     ceiling = RATE_LIMIT_AUTH if is_auth else RATE_LIMIT_GENERAL
     bucket  = "auth" if is_auth else "general"
-    if not _bucket(ip, bucket, ceiling):
+    if not _rl_allow_request(f"{ip}:{bucket}", ceiling, window_seconds=60):
         return Response(
             content='{"detail": "Rate limit exceeded"}',
             status_code=429,

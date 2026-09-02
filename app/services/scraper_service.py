@@ -13,6 +13,8 @@ import requests
 from bs4 import BeautifulSoup
 from typing import Optional
 
+from ..utils.url_safety import safe_get, UnsafeURLError
+
 logger = logging.getLogger("scraper")
 
 HEADERS = {
@@ -51,12 +53,17 @@ def scrape_company_website(website: str, timeout: int = 8) -> dict:
     """
     Fetch a company website and extract:
     title, meta description, detected tech stack, about snippet.
+
+    `website` is untrusted input — it can come from an AI discovery result,
+    a CRM record, or a scraped link — so this goes through safe_get(), which
+    blocks localhost/private/link-local/metadata-endpoint targets and
+    re-validates every redirect hop. See app/utils/url_safety.py.
     """
     url = website if website.startswith("http") else f"https://{website}"
     result = {"url": url, "title": "", "description": "", "tech_stack": [], "about": ""}
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=timeout)
+        resp = safe_get(url, headers=HEADERS, timeout=timeout)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
 
@@ -79,6 +86,9 @@ def scrape_company_website(website: str, timeout: int = 8) -> dict:
                 result["about"] = text[:300]
                 break
 
+    except UnsafeURLError as e:
+        result["error"] = f"blocked (SSRF protection): {e}"
+        logger.warning(f"scrape_company_website blocked unsafe URL {website!r}: {e}")
     except requests.RequestException as e:
         result["error"] = str(e)
         logger.warning(f"scrape_company_website failed for {website}: {e}")

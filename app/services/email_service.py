@@ -165,6 +165,11 @@ class EmailService:
             ))
         log.info("Suppression added: org=%s email=%s reason=%s",
                  self.organization_id, email, reason)
+        from .audit_service import log_audit
+        log_audit(
+            "CONTACT_SUPPRESSED", organization_id=self.organization_id,
+            resource="suppression_list", details=f"email={email} reason={reason} source={source}",
+        )
         return True
 
     def remaining_daily_quota(self) -> Optional[int]:

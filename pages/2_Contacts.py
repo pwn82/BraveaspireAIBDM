@@ -4,9 +4,13 @@ from app.utils.theme import apply_theme as _apply_theme
 
 import streamlit as st
 import pandas as pd
-import json, re
+from datetime import datetime
 from app.database.db import init_db
 from app.utils.helpers import load_settings, get_ai_service, get_scoped_crm
+from app.schemas.ai_outputs import ContactCandidateList
+from app.utils.ai_parsing import parse_ai_json
+from app.policies.outreach_policy import badge_for_email_status
+from app.services.audit_service import log_audit
 
 st.set_page_config(page_title="Contacts — BraveAspire", page_icon="👤", layout="wide")
 _apply_theme()
@@ -91,11 +95,39 @@ with tab_list:
                 "Company":    c.get("company_name") or "—",
                 "Email":      c.get("email") or "—",
                 "Phone":      c.get("phone") or "—",
-                "Verified":   "✅ Yes" if c.get("verified") else "—",
+                "Email Status": badge_for_email_status(c.get("email_status", "unknown")),
                 "LinkedIn":   c.get("linkedin") or "—",
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         st.caption(f"{len(contacts)} contacts")
+
+        st.markdown("**Verify a contact's email**")
+        st.caption("An AI-guessed ('inferred') or unverified contact is blocked from outreach until "
+                   "promoted here — after you've confirmed the address is real.")
+        needs_review = [c for c in contacts if c.get("email_status") != "verified" and c.get("email")]
+        if needs_review:
+            labels = {f"{c['name']} ({c.get('email','')}) — {badge_for_email_status(c.get('email_status'))}": c
+                      for c in needs_review}
+            col_pick, col_btn = st.columns([3, 1])
+            with col_pick:
+                pick_label = st.selectbox("Contact to verify", list(labels.keys()),
+                                          label_visibility="collapsed", key="verify_pick")
+            with col_btn:
+                if st.button("✅ Mark Verified", key="verify_btn"):
+                    target = labels[pick_label]
+                    crm.update_contact(target["id"], {
+                        "email_status": "verified",
+                        "email_source": target.get("email_source") or "manual",
+                        "email_verified_at": datetime.utcnow(),
+                        "verified": True,
+                    })
+                    log_audit("CONTACT_EMAIL_VERIFIED", organization_id=crm.organization_id,
+                              user_id=_current_user.get("id"), resource="contact",
+                              resource_id=target["id"], details=f"email={target.get('email')}")
+                    st.success(f"✅ {target['name']}'s email marked verified — eligible for outreach.")
+                    st.rerun()
+        else:
+            st.caption("Nothing needs review right now.")
     else:
         st.markdown("""
         <div class="empty-box">
@@ -111,7 +143,9 @@ with tab_find:
     st.markdown("""
     <div class="ai-banner">
       <div class="ai-banner-title">🤖 AI Contact Finder</div>
-      <div class="ai-banner-sub">AI generates realistic decision-maker profiles for companies in your CRM.</div>
+      <div class="ai-banner-sub">AI suggests likely decision-maker names/titles from its general knowledge —
+      it never guesses an email address. Added contacts are marked "AI-guessed" and blocked from outreach
+      until you find and verify a real email in the list above.</div>
     </div>""", unsafe_allow_html=True)
 
     companies_all = crm.get_companies()
@@ -131,48 +165,42 @@ with tab_find:
 
         if st.button("🤖 Find Contacts with AI", type="primary", disabled=not roles, key="find_btn"):
             ai = get_ai_service(st)
-            prompt = f"""Generate {len(roles)} realistic decision-maker contacts for this company:
+            prompt = f"""List up to {len(roles)} likely decision-maker names/titles for this company,
+based on your general knowledge. Do NOT invent or guess an email address — you have none to give.
 Company: {company_data['name']}
 Industry: {company_data.get('industry', '')}
 Size: {company_data.get('employee_size', '')} employees
-Website: {company_data.get('website', '')}
 Roles needed: {', '.join(roles)}
+If you are not confident a named person exists for a role, return a title-only entry with an empty name.
 
-Return a JSON array:
-[{{"name": "Full Name", "designation": "Title", "email": "email@domain.com", "linkedin": "linkedin.com/in/handle", "phone": "+1-555-0000"}}]
-Only JSON, no markdown."""
+Return JSON: {{"contacts":[{{"name":"Full Name or empty","designation":"Title"}}]}}"""
 
             with st.spinner(f"Generating with {ai.provider_label}..."):
-                raw       = ai.generate(prompt)
-                raw_clean = re.sub(r"```(?:json)?", "", raw).strip()
-                try:
-                    cts = json.loads(raw_clean)
-                    if not isinstance(cts, list):
-                        raise ValueError
-                except Exception:
-                    match = re.search(r"\[.*\]", raw_clean, re.DOTALL)
-                    cts = json.loads(match.group()) if match else []
+                raw = ai.generate(prompt, system=(
+                    "You are a B2B contact-research assistant. Never fabricate an email address. "
+                    "Respond with valid JSON only."
+                ))
+                parsed, err = parse_ai_json(raw, ContactCandidateList)
+                cts = [c.model_dump() for c in parsed.contacts] if parsed else []
 
             if cts:
-                st.success(f"✅ Found **{len(cts)}** contacts!")
-                # Show as cards using st.markdown divs (no tables)
+                st.success(f"✅ Found **{len(cts)}** likely contact(s) — names/titles only, no email guessed.")
                 for ct in cts:
                     initial = (ct.get("name") or "?")[0].upper()
                     st.markdown(f"""
                     <div class="contact-card">
                       <div class="avatar">{initial}</div>
                       <div style="flex:1">
-                        <div style="font-weight:600;color:#E2E0F0">{ct.get('name','?')}</div>
+                        <div style="font-weight:600;color:#E2E0F0">{ct.get('name') or '(name unknown)'}</div>
                         <div style="font-size:.8rem;color:#9B8FD4">{ct.get('designation','—')}</div>
-                        <div style="font-size:.8rem;color:#7C3AED">{ct.get('email','—')}</div>
+                        <div style="font-size:.8rem;color:#F87171">No email — AI-guessed, needs research</div>
                       </div>
-                      <div style="font-size:.8rem;color:#6B7280">{ct.get('phone','—')}</div>
                     </div>""", unsafe_allow_html=True)
 
                 st.session_state["found_contacts"]   = cts
                 st.session_state["found_company_id"] = company_data["id"]
             else:
-                st.warning("Could not parse contacts. Check AI in **Settings → AI**.")
+                st.warning(f"AI could not name confident candidates for this company. ({err or 'no results'})")
 
         if (st.session_state.get("found_contacts")
                 and st.session_state.get("found_company_id") == company_data["id"]):
@@ -180,14 +208,15 @@ Only JSON, no markdown."""
                 for ct in st.session_state["found_contacts"]:
                     crm.add_contact({
                         "company_id":  company_data["id"],
-                        "name":        ct.get("name", "Unknown"),
+                        "name":        ct.get("name") or "Unknown",
                         "designation": ct.get("designation", ""),
-                        "email":       ct.get("email", ""),
-                        "linkedin":    ct.get("linkedin", ""),
-                        "phone":       ct.get("phone", ""),
+                        "email":       "",
                         "verified":    False,
+                        "email_status": "inferred",
+                        "email_source": "ai_guess",
                     })
-                st.success("✅ Contacts added to CRM!")
+                st.success("✅ Contacts added to CRM as name/title-only — find and verify a real email "
+                          "before outreach (All Contacts tab).")
                 del st.session_state["found_contacts"]
                 st.rerun()
 
@@ -215,12 +244,18 @@ with tab_add:
                 linkedin = st.text_input("LinkedIn URL", placeholder="linkedin.com/in/janesmith")
 
             verified = st.checkbox("Email Verified")
-            notes    = st.text_area("Notes", height=60)
+            notes    = st.text_area("Notes", height=70)
 
             if st.form_submit_button("➕ Add Contact", type="primary"):
                 if not name or not co_sel:
                     st.error("Name and company are required.")
                 else:
+                    if verified:
+                        email_status, verified_at = "verified", datetime.utcnow()
+                    elif email:
+                        email_status, verified_at = "unverified", None  # human-entered, just not confirmed
+                    else:
+                        email_status, verified_at = "unknown", None
                     crm.add_contact({
                         "company_id":  co_map[co_sel],
                         "name":        name,
@@ -230,5 +265,8 @@ with tab_add:
                         "linkedin":    linkedin,
                         "verified":    verified,
                         "notes":       notes,
+                        "email_status": email_status,
+                        "email_source": "manual",
+                        "email_verified_at": verified_at,
                     })
                     st.success(f"✅ **{name}** added!")

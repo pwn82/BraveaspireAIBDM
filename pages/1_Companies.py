@@ -236,7 +236,7 @@ with tab_add:
         hiring      = st.checkbox("Actively Hiring")
         tech_stack  = st.text_input("Tech Stack", placeholder="Python, React, AWS")
         pain_points = st.text_area("Pain Points", placeholder="What challenges does this company face?", height=80)
-        notes       = st.text_area("Notes", height=60)
+        notes       = st.text_area("Notes", height=70)
 
         if st.form_submit_button("➕ Add Company", type="primary"):
             if not name:

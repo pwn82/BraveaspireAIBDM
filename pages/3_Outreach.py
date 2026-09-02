@@ -11,6 +11,8 @@ from app.agents.personalization_agent import PersonalizationAgent
 from app.agents.followup_agent import FollowUpAgent
 from app.agents.proposal_agent import ProposalAgent
 from app.utils.helpers import load_settings, get_ai_service, send_email, get_scoped_crm
+from app.policies.outreach_policy import evaluate_outreach, badge_for_email_status
+from app.services.audit_service import log_audit
 
 st.set_page_config(page_title="Outreach — BraveAspire", page_icon="✉️", layout="wide")
 _apply_theme()
@@ -125,7 +127,11 @@ with tab_email:
 
     col_gen, col_info = st.columns([2, 3])
     with col_info:
+        badge = badge_for_email_status(contact.get("email_status", "unknown"))
+        badge_color = "#34D399" if badge == "VERIFIED" else ("#F87171" if "BLOCKED" in badge else "#FBBF24")
         st.info(f"**To:** {contact.get('name','?')} · {contact.get('designation','—')} · **{company.get('name','?')}**")
+        st.markdown(f'<span style="color:{badge_color};font-weight:700;font-size:.75rem">● {badge}</span>',
+                    unsafe_allow_html=True)
     with col_gen:
         gen_btn = st.button("✨ Generate AI Email", type="primary", key="gen_email")
 
@@ -156,7 +162,22 @@ with tab_email:
         with col_send:
             tracking_enabled = st.checkbox("Track opens", value=True, key="track_cb")
             to_email = contact.get("email", "")
-            if st.button("✅ Approve & Send", type="primary", disabled=not to_email, key="send_email_btn"):
+            decision = evaluate_outreach(
+                organization_id=crm.organization_id,
+                contact_email=to_email,
+                contact_email_status=contact.get("email_status", "unknown"),
+            )
+            if not decision.allowed:
+                st.error(f"⛔ Cannot send: {decision.reason}")
+            # Debounce: a double-click/rerun before this flag resets must not
+            # create two Outreach rows and send twice — each click here
+            # creates a *new* row, so EmailService's own already-sent guard
+            # (which checks an existing row) can't protect against this on
+            # its own the way it does for retries of an existing send.
+            already_sending = st.session_state.get("_sending_email_for") == contact["id"]
+            if st.button("✅ Approve & Send", type="primary",
+                         disabled=(not decision.allowed) or already_sending, key="send_email_btn"):
+                st.session_state["_sending_email_for"] = contact["id"]
                 tracking_id = generate_tracking_id()
                 final_body  = body
                 if tracking_enabled:
@@ -164,19 +185,25 @@ with tab_email:
                     final_body = inject_tracking_pixel(body, tracking_id, base_url)
                 smtp_cfg = {k: st.session_state.get(k) for k in
                             ["smtp_host", "smtp_port", "smtp_user", "smtp_password", "from_email", "from_name"]}
-                ok, msg  = send_email(to_email, subject, final_body, smtp_cfg)
-                status   = "Sent" if ok else "Draft"
                 out_rec  = crm.create_outreach({
                     "contact_id": contact["id"], "subject": subject, "body": body,
-                    "status": status, "sent_at": datetime.utcnow() if ok else None,
-                    "tracking_id": tracking_id,
+                    "status": "Draft", "tracking_id": tracking_id,
+                    "approved_by": _current_user.get("id"), "approved_at": datetime.utcnow(),
                 })
-                if ok:
+                log_audit("OUTREACH_APPROVED", organization_id=crm.organization_id,
+                          user_id=_current_user.get("id"), resource="outreach",
+                          resource_id=out_rec["id"] if out_rec else None,
+                          details=f"contact_id={contact['id']}")
+                ok, msg  = send_email(to_email, subject, final_body, smtp_cfg,
+                                       organization_id=crm.organization_id,
+                                       outreach_id=out_rec["id"] if out_rec else None)
+                if ok and out_rec:
                     fu_agent = FollowUpAgent(get_ai_service(st), crm)
                     fu_agent.schedule_followups(out_rec["id"], out_rec, contact, company)
                     st.success(f"✅ Email sent! 3 follow-ups scheduled. Tracking: `{tracking_id}`")
                 else:
-                    st.warning(f"SMTP not configured — saved as Draft. ({msg})")
+                    st.warning(f"Not sent — saved as Draft. ({msg})")
+                del st.session_state["_sending_email_for"]
                 del st.session_state["email_draft"]
         with col_draft:
             if st.button("💾 Save Draft", key="save_draft_btn"):
@@ -393,22 +420,36 @@ with tab_hitl:
             ):
                 st.text_area("Email Body", value=item.get("body", ""), height=180,
                              disabled=True, key=f"hitl_body_{item['id']}")
+                decision = evaluate_outreach(
+                    organization_id=crm.organization_id,
+                    contact_email=item.get("contact_email", ""),
+                    contact_email_status=item.get("contact_email_status", "unknown"),
+                )
+                if not decision.allowed:
+                    st.error(f"⛔ Cannot send: {decision.reason}")
                 col_a, col_r_col = st.columns(2)
                 with col_a:
-                    if st.button("✅ Approve & Send", key=f"appr_{item['id']}", type="primary"):
+                    if st.button("✅ Approve & Send", key=f"appr_{item['id']}", type="primary",
+                                 disabled=not decision.allowed):
                         smtp_cfg = {k: st.session_state.get(k) for k in
                                     ["smtp_host", "smtp_port", "smtp_user", "smtp_password",
                                      "from_email", "from_name"]}
+                        crm.update_outreach(item["id"], {
+                            "approved_by": _current_user.get("id"), "approved_at": datetime.utcnow(),
+                        })
+                        log_audit("OUTREACH_APPROVED", organization_id=crm.organization_id,
+                                  user_id=_current_user.get("id"), resource="outreach",
+                                  resource_id=item["id"])
                         ok, msg  = send_email(
                             item.get("contact_email", ""),
                             item.get("subject", ""),
                             item.get("body", ""),
                             smtp_cfg,
+                            organization_id=crm.organization_id,
+                            outreach_id=item["id"],
                         )
-                        crm.update_outreach(item["id"], {
-                            "status": "Sent" if ok else "Draft",
-                            "sent_at": datetime.utcnow() if ok else None,
-                        })
+                        if not ok:
+                            crm.update_outreach(item["id"], {"status": "Draft"})
                         st.success(msg) if ok else st.error(msg)
                         st.rerun()
                 with col_r_col:

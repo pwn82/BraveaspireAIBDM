@@ -10,6 +10,17 @@ from .models import (
     Organization, OrganizationUser, AILog, AuditLog,
 )
 
+# This module resolves DATABASE_URL from the environment at IMPORT time
+# (module-level code below), before any other app module runs. Every
+# entrypoint (streamlit_app.py, backend/main.py) imports `app.database.db`
+# first, so if .env is only loaded later (app/utils/helpers.py's
+# load_dotenv()), DATABASE_URL from .env is invisible here and the app
+# silently falls back to SQLite even when a real Postgres URL is configured.
+# Load .env here, first, so this works the same locally and in Docker
+# (where env_file: .env already sets real OS env vars before Python starts).
+from dotenv import load_dotenv
+load_dotenv()
+
 log = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -204,19 +215,39 @@ def _run_migrations():
         head_rev = script.get_current_head()
 
         if current_rev is None:
-            # Either brand new, or a legacy DB with existing tables.
+            # Either brand new, a fully-formed legacy DB, or (the dangerous
+            # case this block used to get wrong) a PARTIALLY-formed one —
+            # e.g. an app instance that ran against this DB before some
+            # tables/columns existed in models.py, so it has *some* of our
+            # tables but not all of them.
             from sqlalchemy import inspect
             insp = inspect(engine)
             existing_tables = set(insp.get_table_names())
-            # Any of our tables already there? Then this is a legacy dev DB
-            # and we STAMP head instead of trying to re-create tables.
             model_tables = set(Base.metadata.tables.keys())
-            if existing_tables & model_tables:
-                log.info("Alembic: existing schema detected → stamp head (%s)", head_rev)
-                command.stamp(alembic_cfg, "head")
-            else:
+            overlap = existing_tables & model_tables
+            missing_tables = model_tables - existing_tables
+
+            if not overlap:
                 log.info("Alembic: empty DB → upgrade head (%s)", head_rev)
                 command.upgrade(alembic_cfg, "head")
+            elif not missing_tables and not _has_missing_columns(insp, model_tables):
+                # Every table AND every column already matches the current
+                # model — a genuinely complete legacy schema. Safe to just
+                # record that fact; there is nothing to create or alter.
+                log.info("Alembic: complete legacy schema detected → stamp head (%s)", head_rev)
+                command.stamp(alembic_cfg, "head")
+            else:
+                # Partial overlap: some tables/columns exist, some don't.
+                # Stamping head here (the previous behavior) would have
+                # permanently hidden the gap — alembic would believe the
+                # schema was fully migrated while entire tables/columns were
+                # actually missing. Reconcile the gap directly instead.
+                log.warning(
+                    "Alembic: PARTIAL legacy schema detected (some tables/columns "
+                    "exist, some don't) — reconciling gap before stamping head."
+                )
+                _reconcile_partial_schema(missing_tables)
+                command.stamp(alembic_cfg, "head")
         elif current_rev != head_rev:
             log.info("Alembic: upgrading %s → %s", current_rev, head_rev)
             command.upgrade(alembic_cfg, "head")
@@ -228,6 +259,65 @@ def _run_migrations():
             Base.metadata.create_all(bind=engine)
         except Exception as e2:
             log.warning("create_all fallback also failed: %s", e2)
+
+
+def _has_missing_columns(insp, model_tables: set) -> bool:
+    """True if any table that exists in both the DB and the model is
+    missing at least one column the model expects."""
+    existing_tables = set(insp.get_table_names())
+    for tname in existing_tables & model_tables:
+        existing_cols = {c["name"] for c in insp.get_columns(tname)}
+        model_cols = {c.name for c in Base.metadata.tables[tname].columns}
+        if model_cols - existing_cols:
+            return True
+    return False
+
+
+def _reconcile_partial_schema(missing_tables: set) -> None:
+    """
+    Bring a partially-formed legacy DB up to the current model in place,
+    without touching any existing row. This is the exact situation a
+    pre-Phase-1 deployment (created via Base.metadata.create_all() before
+    `organizations`/multi-tenancy/email-safety/etc. existed in models.py)
+    ends up in: some tables exist, some don't; existing tables are missing
+    newer columns. Everything below is additive-only — CREATE TABLE for
+    what's absent, ADD COLUMN for what's absent on tables that do exist —
+    inside one transaction so a failure rolls back cleanly rather than
+    leaving the schema half-reconciled.
+    """
+    from sqlalchemy import inspect
+    from alembic.operations import Operations
+    from alembic.migration import MigrationContext
+
+    with engine.connect() as conn:
+        insp = inspect(conn)
+        ctx = Operations(MigrationContext.configure(conn))
+        trans = conn.begin()
+        try:
+            if missing_tables:
+                # create_all (not per-table .create()) topologically sorts
+                # by FK dependency, e.g. bounce_events -> organizations.
+                Base.metadata.create_all(
+                    bind=conn, tables=[Base.metadata.tables[t] for t in missing_tables],
+                )
+                log.info("Schema reconcile: created missing table(s): %s", sorted(missing_tables))
+
+            model_tables = set(Base.metadata.tables.keys())
+            existing_tables = set(insp.get_table_names())
+            for tname in sorted(existing_tables & model_tables):
+                existing_cols = {c["name"] for c in insp.get_columns(tname)}
+                table = Base.metadata.tables[tname]
+                missing_cols = [c for c in table.columns if c.name not in existing_cols]
+                for col in missing_cols:
+                    ctx.add_column(tname, col.copy())
+                if missing_cols:
+                    log.info("Schema reconcile: added column(s) on %s: %s",
+                            tname, [c.name for c in missing_cols])
+            trans.commit()
+        except Exception:
+            trans.rollback()
+            log.exception("Schema reconcile failed — rolled back, no partial changes applied.")
+            raise
 
 
 def _sqlite_migrate():

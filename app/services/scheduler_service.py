@@ -23,6 +23,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from ..database.db import DATABASE_URL, engine
 from .job_service import run_job, sweep_ready_retries
+from ..utils.distributed_lock import try_lock
 
 logger = logging.getLogger("scheduler")
 
@@ -76,31 +77,39 @@ def stop_scheduler():
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _job_send_followups():
-    """Auto-send follow-ups whose scheduled_at has passed. Idempotent per followup id."""
-    from ..database.db import get_db
-    from ..database.models import FollowUp
+    """
+    Auto-send follow-ups whose scheduled_at has passed. Idempotent per
+    followup id via run_job()'s DB-enforced uniqueness regardless — the
+    lock here just stops multiple scheduler replicas from redundantly
+    racing the same overdue batch into that constraint every tick.
+    """
+    with try_lock("scheduler:send_followups", ttl_seconds=120) as acquired:
+        if not acquired:
+            return
+        from ..database.db import get_db
+        from ..database.models import FollowUp
 
-    with get_db() as db:
-        overdue = (
-            db.query(FollowUp)
-            .filter(FollowUp.status == "Scheduled",
-                    FollowUp.scheduled_at <= datetime.utcnow())
-            .all()
-        )
-        overdue_ids = [f.id for f in overdue]
+        with get_db() as db:
+            overdue = (
+                db.query(FollowUp)
+                .filter(FollowUp.status == "Scheduled",
+                        FollowUp.scheduled_at <= datetime.utcnow())
+                .all()
+            )
+            overdue_ids = [f.id for f in overdue]
 
-    sent = 0
-    for fu_id in overdue_ids:
-        outcome = run_job(
-            workflow_name="send_followup",
-            idempotency_key=f"followup:{fu_id}",
-            fn=_send_one_followup,
-            fu_id=fu_id,
-        )
-        if outcome.outcome == "succeeded":
-            sent += 1
-    if sent:
-        logger.info("[scheduler] Sent %d overdue follow-ups.", sent)
+        sent = 0
+        for fu_id in overdue_ids:
+            outcome = run_job(
+                workflow_name="send_followup",
+                idempotency_key=f"followup:{fu_id}",
+                fn=_send_one_followup,
+                fu_id=fu_id,
+            )
+            if outcome.outcome == "succeeded":
+                sent += 1
+        if sent:
+            logger.info("[scheduler] Sent %d overdue follow-ups.", sent)
 
 
 def _send_one_followup(fu_id: int):
@@ -171,45 +180,53 @@ async def _job_check_inbox():
     if not imap_user or not imap_pass:
         return
     # This job is naturally idempotent (walks unread mail, marks read on success).
-    # Wrapping with run_job would just add a row per tick with no benefit.
-    try:
-        from .imap_service import IMAPService
-        imap = IMAPService(
-            host=os.getenv("IMAP_HOST", "imap.gmail.com"),
-            port=int(os.getenv("IMAP_PORT", "993")),
-            username=imap_user,
-            password=imap_pass,
-        )
-        count = imap.check_replies()
-        if count:
-            logger.info("[scheduler] Inbox check: %d new replies detected.", count)
-    except Exception as e:                                          # noqa: BLE001
-        logger.error("[scheduler] check_inbox error: %s", e)
+    # Wrapping with run_job would just add a row per tick with no benefit —
+    # the lock just avoids two replicas both logging into the same mailbox
+    # for the same tick.
+    with try_lock("scheduler:check_inbox", ttl_seconds=60) as acquired:
+        if not acquired:
+            return
+        try:
+            from .imap_service import IMAPService
+            imap = IMAPService(
+                host=os.getenv("IMAP_HOST", "imap.gmail.com"),
+                port=int(os.getenv("IMAP_PORT", "993")),
+                username=imap_user,
+                password=imap_pass,
+            )
+            count = imap.check_replies()
+            if count:
+                logger.info("[scheduler] Inbox check: %d new replies detected.", count)
+        except Exception as e:                                      # noqa: BLE001
+            logger.error("[scheduler] check_inbox error: %s", e)
 
 
 async def _job_analytics_snapshot():
     """One snapshot per active organization. Idempotent per (org, day)."""
-    from ..database.db import get_db
-    from ..database.models import Organization
+    with try_lock("scheduler:analytics_snapshot", ttl_seconds=300) as acquired:
+        if not acquired:
+            return
+        from ..database.db import get_db
+        from ..database.models import Organization
 
-    with get_db() as db:
-        org_ids = [o.id for o in db.query(Organization).filter(
-            Organization.status == "active"
-        ).all()]
+        with get_db() as db:
+            org_ids = [o.id for o in db.query(Organization).filter(
+                Organization.status == "active"
+            ).all()]
 
-    today = date.today().isoformat()
-    saved = 0
-    for org_id in org_ids:
-        outcome = run_job(
-            workflow_name="analytics_snapshot",
-            idempotency_key=f"snap:{today}",
-            fn=_snapshot_one_org,
-            organization_id=org_id,
-            org_id=org_id,
-        )
-        if outcome.outcome == "succeeded":
-            saved += 1
-    logger.info("[scheduler] Analytics snapshot saved for %d org(s).", saved)
+        today = date.today().isoformat()
+        saved = 0
+        for org_id in org_ids:
+            outcome = run_job(
+                workflow_name="analytics_snapshot",
+                idempotency_key=f"snap:{today}",
+                fn=_snapshot_one_org,
+                organization_id=org_id,
+                org_id=org_id,
+            )
+            if outcome.outcome == "succeeded":
+                saved += 1
+        logger.info("[scheduler] Analytics snapshot saved for %d org(s).", saved)
 
 
 def _snapshot_one_org(org_id: int):
@@ -234,6 +251,13 @@ def _snapshot_one_org(org_id: int):
 
 async def _job_retry_sweep():
     """Re-dispatch workflow_runs whose next_retry_at has arrived."""
+    with try_lock("scheduler:retry_sweep", ttl_seconds=60) as acquired:
+        if not acquired:
+            return
+        _run_retry_sweep()
+
+
+def _run_retry_sweep():
     ready = sweep_ready_retries()
     if not ready:
         return

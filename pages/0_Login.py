@@ -70,8 +70,12 @@ if st.session_state.get("authenticated") and st.session_state.get("user"):
 
     from app.utils.rbac import ROLE_DISPLAY
     role_label = ROLE_DISPLAY.get(role, role)
-    st.success(f"✅ Logged in as **{user.get('full_name') or user.get('email')}** "
-               f"<span class='role-chip'>{role_label}</span>", unsafe_allow_html=True)
+    # st.success() doesn't accept unsafe_allow_html on every Streamlit version
+    # (added in some releases, absent in others) — keep the alert plain-text
+    # and render the role chip as a separate markdown element, whose
+    # unsafe_allow_html support has been stable across versions.
+    st.success(f"✅ Logged in as **{user.get('full_name') or user.get('email')}**")
+    st.markdown(f"<span class='role-chip'>{role_label}</span>", unsafe_allow_html=True)
     st.info("Use the sidebar to navigate.")
     if st.button("🚪 Logout", type="secondary"):
         for k in ["authenticated", "user", "token", "refresh_token",
