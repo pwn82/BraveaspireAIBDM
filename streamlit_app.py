@@ -141,29 +141,10 @@ from app.services.dashboard_service import kpi_sparklines
 from app.services.activity_service import recent_activities, humanize_delta
 from app.services.insights_service import compute_insights
 from app.services.task_service import TaskService
+from app.utils.ui_components import kpi_card
 
 sparklines = kpi_sparklines(org_id)
 task_svc   = TaskService(org_id)
-
-
-def _sparkline_svg(values: list, color: str, width: int = 100, height: int = 30) -> str:
-    """Inline SVG polyline — no chart library/iframe needed for a card-embedded trend line."""
-    if not values or max(values) == 0:
-        points = f"0,{height - 2} {width},{height - 2}"
-    else:
-        vmax = max(values)
-        n = len(values)
-        step = width / max(1, n - 1)
-        points = " ".join(
-            f"{i * step:.1f},{height - 2 - (v / vmax) * (height - 4):.1f}"
-            for i, v in enumerate(values)
-        )
-    return (
-        f'<svg width="100%" height="{height}" viewBox="0 0 {width} {height}" '
-        f'preserveAspectRatio="none" style="display:block;margin-top:6px">'
-        f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2" '
-        f'stroke-linecap="round" stroke-linejoin="round"/></svg>'
-    )
 
 
 # ── Top bar: search · notifications · date range · quick add ─────────────────
@@ -226,30 +207,6 @@ st.markdown(f"""
 # ── KPI Cards (with real 7-day sparklines) ────────────────────────────────────
 k1, k2, k3, k4, k5 = st.columns(5)
 active = stats["pipeline"].get("Interested",0) + stats["pipeline"].get("Proposal",0)
-
-
-def kpi_card(col, label, value, delta=None, delta_label="vs last 7 days",
-            color="#7C3AED", spark=None):
-    delta_html = ""
-    if delta is not None:
-        sign  = "+" if delta >= 0 else ""
-        dcolor = "#10B981" if delta >= 0 else "#EF4444"
-        delta_html = f'<div style="font-size:0.72rem;color:{dcolor};margin-top:4px;font-weight:500;">{sign}{delta}% {delta_label}</div>'
-    spark_html = _sparkline_svg(spark, color) if spark else ""
-    col.markdown(f"""
-    <div style="background:linear-gradient(135deg,#16133A,#12102A);border:1px solid #2D2556;
-                border-radius:14px;padding:18px 20px;position:relative;overflow:hidden;
-                transition:all 0.25s;">
-      <div style="position:absolute;top:0;left:0;right:0;height:2px;
-                  background:linear-gradient(90deg,{color},{color}80);"></div>
-      <div style="font-size:0.7rem;color:#9580C4;font-weight:700;text-transform:uppercase;
-                  letter-spacing:0.08em;margin-bottom:8px;">{label}</div>
-      <div style="font-size:1.9rem;font-weight:800;color:#EDE9FE;letter-spacing:-0.02em;
-                  line-height:1;">{value}</div>
-      {delta_html}
-      {spark_html}
-    </div>
-    """, unsafe_allow_html=True)
 
 
 reply_rate_spark = [

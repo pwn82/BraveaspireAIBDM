@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from app.database.db import init_db
 from app.agents.followup_agent import FollowUpAgent
 from app.utils.helpers import load_settings, get_ai_service, send_email, get_scoped_crm
+from app.utils.ui_components import kpi_card, page_header
 
 st.set_page_config(page_title="Follow-ups — BraveAspire", page_icon="🔁", layout="wide")
 _apply_theme()
@@ -23,17 +24,6 @@ crm = get_scoped_crm(st)
 # ── CSS (divs/spans — no tables) ──────────────────────────────────────────────
 st.markdown("""
 <style>
-.pg-title{font-size:1.75rem;font-weight:700;color:#F0EEFF;margin:0}
-.pg-sub{font-size:.85rem;color:#9B8FD4;margin:.2rem 0 1.2rem 0;
-  padding-bottom:1rem;border-bottom:1px solid #2D2556}
-.kpi-row{display:flex;gap:1rem;margin-bottom:1.2rem}
-.kpi-box{background:linear-gradient(135deg,#1A1830,#12102A);
-  border:1px solid #2D2556;border-radius:10px;padding:.75rem 1.2rem;flex:1;
-  border-top:3px solid #7C3AED}
-.kpi-box.warn{border-top-color:#F59E0B}
-.kpi-box.good{border-top-color:#34D399}
-.kpi-val{font-size:1.4rem;font-weight:800;color:#E2E0F0}
-.kpi-lbl{font-size:.7rem;color:#9B8FD4;text-transform:uppercase;letter-spacing:.06em}
 .overdue-bar{background:#2A1A0A;border:1px solid #92400E;border-radius:10px;
   padding:.8rem 1.2rem;margin-bottom:1.1rem;color:#FCD34D;font-size:.9rem;font-weight:600}
 .cadence-note{background:#1A1830;border:1px solid #2D2556;border-radius:8px;
@@ -47,9 +37,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="pg-title">🔁 Follow-ups</div>', unsafe_allow_html=True)
-st.markdown('<div class="pg-sub">Automated cadence: Day 3 → Day 7 → Day 14 · Smart AI variations per sequence</div>',
-            unsafe_allow_html=True)
+page_header("🔁", "Follow-ups", "Automated cadence: Day 3 → Day 7 → Day 14 · Smart AI variations per sequence")
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 all_fus   = crm.get_followups()
@@ -57,13 +45,12 @@ scheduled = [f for f in all_fus if f["status"] == "Scheduled"]
 sent_fus  = [f for f in all_fus if f["status"] == "Sent"]
 skipped   = [f for f in all_fus if f["status"] == "Skipped"]
 
-st.markdown(f"""
-<div class="kpi-row">
-  <div class="kpi-box"><div class="kpi-val">{len(all_fus)}</div><div class="kpi-lbl">Total</div></div>
-  <div class="kpi-box warn"><div class="kpi-val" style="color:#FBBF24">{len(scheduled)}</div><div class="kpi-lbl">Scheduled</div></div>
-  <div class="kpi-box good"><div class="kpi-val" style="color:#34D399">{len(sent_fus)}</div><div class="kpi-lbl">Sent</div></div>
-  <div class="kpi-box"><div class="kpi-val" style="color:#6B7280">{len(skipped)}</div><div class="kpi-lbl">Skipped</div></div>
-</div>""", unsafe_allow_html=True)
+kf1, kf2, kf3, kf4 = st.columns(4)
+kpi_card(kf1, "Total",     f"{len(all_fus):,}", color="#7C3AED")
+kpi_card(kf2, "Scheduled", f"{len(scheduled):,}", color="#FBBF24")
+kpi_card(kf3, "Sent",      f"{len(sent_fus):,}", color="#34D399")
+kpi_card(kf4, "Skipped",   f"{len(skipped):,}", color="#6B7280")
+st.markdown("<div style='margin-bottom:20px'></div>", unsafe_allow_html=True)
 
 # ── Overdue check ─────────────────────────────────────────────────────────────
 ai    = get_ai_service(st)

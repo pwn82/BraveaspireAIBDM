@@ -12,6 +12,7 @@ from app.services.auth_service import (
 )
 from app.utils.rbac import require_auth, require_permission, ROLE_DISPLAY, ROLE_DESCRIPTIONS, ROLES
 from app.utils.helpers import load_settings
+from app.utils.ui_components import kpi_card, page_header
 
 st.set_page_config(page_title="User Management — BraveAspire", page_icon="👥", layout="wide")
 _apply_theme()
@@ -25,9 +26,6 @@ require_permission("user.read", current_user)
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-.pg-title{font-size:1.75rem;font-weight:700;color:#F0EEFF;margin:0}
-.pg-sub{font-size:.85rem;color:#9B8FD4;margin:.2rem 0 1.4rem 0;
-  padding-bottom:1rem;border-bottom:1px solid #2D2556}
 .role-badge{display:inline-block;border-radius:20px;padding:3px 10px;
   font-size:.72rem;font-weight:600;color:#fff}
 .rb-super_admin{background:#7C3AED}
@@ -38,35 +36,23 @@ st.markdown("""
 .rb-viewer{background:#4B5563}
 .user-card{background:#1A1830;border:1px solid #2D2556;border-radius:12px;
   padding:1rem 1.2rem;margin-bottom:.8rem}
-.stat-chip{background:#12102A;border:1px solid #2D2556;border-radius:8px;
-  padding:.5rem 1rem;text-align:center}
-.stat-val{font-size:1.5rem;font-weight:800;color:#C4B5FD}
-.stat-lbl{font-size:.7rem;color:#9B8FD4;text-transform:uppercase}
 </style>
 """, unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown('<div class="pg-title">👥 User Management</div>', unsafe_allow_html=True)
-st.markdown('<div class="pg-sub">Create employees · Assign roles · Manage access · Security settings</div>',
-            unsafe_allow_html=True)
+page_header("👥", "User Management", "Create employees · Assign roles · Manage access · Security settings")
 
 # ── Stats row ─────────────────────────────────────────────────────────────────
 all_users  = get_all_users()
 active_cnt = sum(1 for u in all_users if u["is_active"])
 admin_cnt  = sum(1 for u in all_users if u["role"] in ("super_admin", "admin"))
 
-c1, c2, c3, c4 = st.columns(4)
-for col, val, lbl in [
-    (c1, len(all_users),  "Total Users"),
-    (c2, active_cnt,      "Active"),
-    (c3, len(all_users) - active_cnt, "Inactive"),
-    (c4, admin_cnt,       "Admins"),
-]:
-    col.markdown(f"""
-    <div class="stat-chip">
-      <div class="stat-val">{val}</div>
-      <div class="stat-lbl">{lbl}</div>
-    </div>""", unsafe_allow_html=True)
+cu1, cu2, cu3, cu4 = st.columns(4)
+kpi_card(cu1, "Total Users", f"{len(all_users):,}", color="#7C3AED")
+kpi_card(cu2, "Active",      f"{active_cnt:,}", color="#10B981")
+kpi_card(cu3, "Inactive",    f"{len(all_users) - active_cnt:,}", color="#6B7280")
+kpi_card(cu4, "Admins",      f"{admin_cnt:,}", color="#A855F7")
+st.markdown("<div style='margin-bottom:20px'></div>", unsafe_allow_html=True)
 
 st.divider()
 

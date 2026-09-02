@@ -8,6 +8,7 @@ from app.database.db import init_db
 from app.agents.company_scraping_agent import CompanyScrapingAgent
 from app.utils.rbac import require_auth, require_permission
 from app.utils.helpers import load_settings, get_ai_service, get_scoped_crm
+from app.utils.ui_components import page_header
 
 st.set_page_config(page_title="Lead Scraper — BraveAspire", page_icon="🔎", layout="wide")
 _apply_theme()
@@ -22,9 +23,6 @@ crm = get_scoped_crm(st)
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-.pg-title{font-size:1.75rem;font-weight:700;color:#F0EEFF;margin:0}
-.pg-sub{font-size:.85rem;color:#9B8FD4;margin:.2rem 0 1.4rem 0;
-  padding-bottom:1rem;border-bottom:1px solid #2D2556}
 .source-badge{display:inline-block;background:#2D2556;border-radius:4px;
   padding:2px 8px;font-size:.72rem;color:#C4B5FD;margin:.1rem}
 .result-card{background:#1A1830;border:1px solid #2D2556;border-radius:10px;
@@ -39,9 +37,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="pg-title">🔎 Lead Scraper</div>', unsafe_allow_html=True)
-st.markdown('<div class="pg-sub">Module 1 — Multi-source company discovery · AI scoring · Hiring & funding detection</div>',
-            unsafe_allow_html=True)
+page_header("🔎", "Lead Scraper", "Module 1 — Multi-source company discovery · AI scoring · Hiring & funding detection")
 
 # ── Resolve API keys: session_state (set via Settings) → env fallback ─────────
 def _has_key(ss_key: str, env_key: str) -> bool:

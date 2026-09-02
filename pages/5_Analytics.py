@@ -8,6 +8,7 @@ import plotly.express as px
 import pandas as pd
 from app.database.db import init_db
 from app.utils.helpers import load_settings, get_scoped_crm
+from app.utils.ui_components import kpi_card, page_header
 
 st.set_page_config(page_title="Analytics — BraveAspire", page_icon="📈", layout="wide")
 _apply_theme()
@@ -24,67 +25,31 @@ stats = crm.get_pipeline_stats()
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-.pg-title{font-size:1.75rem;font-weight:700;color:#F0EEFF;margin:0}
-.pg-sub{font-size:.85rem;color:#9B8FD4;margin:.2rem 0 1.4rem 0;
-  padding-bottom:1rem;border-bottom:1px solid #2D2556}
-.kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:.9rem;margin-bottom:1.6rem}
-.kpi-card{background:linear-gradient(135deg,#1A1830,#12102A);border:1px solid #2D2556;
-  border-radius:12px;padding:1rem 1.2rem;position:relative;overflow:hidden}
-.kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
-  background:linear-gradient(90deg,#7C3AED,#4C1D95)}
-.kpi-val{font-size:1.5rem;font-weight:800;color:#E2E0F0;margin:.2rem 0}
-.kpi-lbl{font-size:.72rem;color:#9B8FD4;text-transform:uppercase;letter-spacing:.06em}
-.kpi-up{font-size:.73rem;color:#34D399;margin-top:.2rem}
-.kpi-dn{font-size:.73rem;color:#F87171;margin-top:.2rem}
 .section-title{font-size:.95rem;font-weight:700;color:#E2E0F0;margin-bottom:.2rem}
 .section-sub{font-size:.78rem;color:#9B8FD4;margin-bottom:.8rem}
 </style>
 """, unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown('<div class="pg-title">📈 Analytics & Revenue</div>', unsafe_allow_html=True)
-st.markdown('<div class="pg-sub">Full-funnel performance · Pipeline health · Revenue tracking</div>',
-            unsafe_allow_html=True)
+page_header("📈", "Analytics & Revenue", "Full-funnel performance · Pipeline health · Revenue tracking")
 
 # ── KPI cards ─────────────────────────────────────────────────────────────────
 open_rate  = stats["open_rate"]
 reply_rate = stats["reply_rate"]
 conv_rate  = stats["conversion_rate"]
 
-st.markdown(f"""
-<div class="kpi-grid">
-  <div class="kpi-card">
-    <div class="kpi-lbl">Companies</div>
-    <div class="kpi-val">{stats['total_companies']}</div>
-    <div class="kpi-up">↑ in pipeline</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-lbl">Contacts</div>
-    <div class="kpi-val">{stats['total_contacts']}</div>
-    <div class="kpi-up">↑ decision-makers</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-lbl">Emails Sent</div>
-    <div class="kpi-val">{stats['emails_sent']}</div>
-    <div class="kpi-up">↑ outreach</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-lbl">Open Rate</div>
-    <div class="kpi-val">{open_rate}%</div>
-    <div class="{'kpi-up' if open_rate >= 40 else 'kpi-dn'}">{'↑ on target' if open_rate >= 40 else '↓ below 40% goal'}</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-lbl">Reply Rate</div>
-    <div class="kpi-val">{reply_rate}%</div>
-    <div class="{'kpi-up' if reply_rate >= 10 else 'kpi-dn'}">{'↑ on target' if reply_rate >= 10 else '↓ below 10% goal'}</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-lbl">Win Rate</div>
-    <div class="kpi-val">{conv_rate}%</div>
-    <div class="kpi-up">↑ conversion</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+from app.services.dashboard_service import kpi_sparklines
+_spark = kpi_sparklines(crm.organization_id)
+
+ka1, ka2, ka3, ka4, ka5, ka6 = st.columns(6)
+kpi_card(ka1, "Companies",   f"{stats['total_companies']:,}", color="#7C3AED", spark=_spark["companies"])
+kpi_card(ka2, "Contacts",    f"{stats['total_contacts']:,}", color="#A855F7", spark=_spark["verified_contacts"])
+kpi_card(ka3, "Emails Sent", f"{stats['emails_sent']:,}", color="#6366F1", spark=_spark["emails_sent"])
+kpi_card(ka4, "Open Rate",   f"{open_rate}%", color="#38BDF8" if open_rate >= 40 else "#F87171")
+kpi_card(ka5, "Reply Rate",  f"{reply_rate}%", color="#10B981" if reply_rate >= 10 else "#F87171",
+         spark=_spark["replies"])
+kpi_card(ka6, "Win Rate",    f"{conv_rate}%", color="#34D399")
+st.markdown("<div style='margin-bottom:20px'></div>", unsafe_allow_html=True)
 
 # ── Row 1: Pipeline funnel + Donut ────────────────────────────────────────────
 pipeline = stats["pipeline"]

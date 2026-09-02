@@ -8,6 +8,7 @@ from app.database.db import init_db
 from app.agents.lead_discovery_agent import LeadDiscoveryAgent
 from app.agents.company_analyzer_agent import CompanyAnalyzerAgent
 from app.utils.helpers import load_settings, get_ai_service, get_scoped_crm
+from app.utils.ui_components import kpi_card, page_header
 
 st.set_page_config(page_title="Companies — BraveAspire", page_icon="🏢", layout="wide")
 _apply_theme()
@@ -23,15 +24,6 @@ crm = get_scoped_crm(st)
 # ── Page-level CSS (divs/spans only — no tables) ─────────────────────────────
 st.markdown("""
 <style>
-.pg-title{font-size:1.75rem;font-weight:700;color:#F0EEFF;margin:0}
-.pg-sub{font-size:.85rem;color:#9B8FD4;margin:.2rem 0 1.2rem 0;
-  padding-bottom:1rem;border-bottom:1px solid #2D2556}
-.kpi-row{display:flex;gap:1rem;margin-bottom:1.2rem}
-.kpi-box{background:linear-gradient(135deg,#1A1830,#12102A);
-  border:1px solid #2D2556;border-radius:10px;padding:.75rem 1.2rem;flex:1;
-  border-top:3px solid #7C3AED}
-.kpi-val{font-size:1.5rem;font-weight:800;color:#E2E0F0}
-.kpi-lbl{font-size:.7rem;color:#9B8FD4;text-transform:uppercase;letter-spacing:.06em}
 .ai-banner{background:linear-gradient(135deg,#1A1040,#12102A);
   border:1px solid #4C1D95;border-radius:12px;padding:1rem 1.4rem;margin-bottom:1.2rem}
 .ai-banner-title{font-size:.95rem;font-weight:700;color:#C4B5FD;margin-bottom:.2rem}
@@ -42,9 +34,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown('<div class="pg-title">🏢 Companies</div>', unsafe_allow_html=True)
-st.markdown('<div class="pg-sub">Manage your lead pipeline · Discover new companies with AI</div>',
-            unsafe_allow_html=True)
+page_header("🏢", "Companies", "Manage your lead pipeline · Discover new companies with AI")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab_list, tab_discover, tab_add, tab_analyze = st.tabs(
@@ -61,13 +51,15 @@ with tab_list:
     hot     = sum(1 for c in all_cos if (c.get("score") or 0) >= 85)
     won     = sum(1 for c in all_cos if c.get("status") == "Won")
 
-    st.markdown(f"""
-    <div class="kpi-row">
-      <div class="kpi-box"><div class="kpi-val">{total}</div><div class="kpi-lbl">Total Companies</div></div>
-      <div class="kpi-box"><div class="kpi-val">{hiring}</div><div class="kpi-lbl">Actively Hiring</div></div>
-      <div class="kpi-box"><div class="kpi-val">{hot}</div><div class="kpi-lbl">Hot Leads (85+)</div></div>
-      <div class="kpi-box"><div class="kpi-val">{won}</div><div class="kpi-lbl">Deals Won</div></div>
-    </div>""", unsafe_allow_html=True)
+    from app.services.dashboard_service import kpi_sparklines
+    _spark = kpi_sparklines(crm.organization_id)
+
+    kc1, kc2, kc3, kc4 = st.columns(4)
+    kpi_card(kc1, "Total Companies",  f"{total:,}", color="#7C3AED", spark=_spark["companies"])
+    kpi_card(kc2, "Actively Hiring",  f"{hiring:,}", color="#A855F7")
+    kpi_card(kc3, "Hot Leads (85+)",  f"{hot:,}", color="#10B981")
+    kpi_card(kc4, "Deals Won",        f"{won:,}", color="#6366F1")
+    st.markdown("<div style='margin-bottom:20px'></div>", unsafe_allow_html=True)
 
     # Filters
     col_s, col_i, col_l, col_st = st.columns([3, 2, 2, 2])

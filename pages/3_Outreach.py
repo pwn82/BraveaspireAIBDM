@@ -13,6 +13,7 @@ from app.agents.proposal_agent import ProposalAgent
 from app.utils.helpers import load_settings, get_ai_service, send_email, get_scoped_crm
 from app.policies.outreach_policy import evaluate_outreach, badge_for_email_status
 from app.services.audit_service import log_audit
+from app.utils.ui_components import kpi_card, page_header
 
 st.set_page_config(page_title="Outreach — BraveAspire", page_icon="✉️", layout="wide")
 _apply_theme()
@@ -28,16 +29,6 @@ crm = get_scoped_crm(st)
 # ── CSS (divs/spans — no tables) ──────────────────────────────────────────────
 st.markdown("""
 <style>
-.pg-title{font-size:1.75rem;font-weight:700;color:#F0EEFF;margin:0}
-.pg-sub{font-size:.85rem;color:#9B8FD4;margin:.2rem 0 1.2rem 0;
-  padding-bottom:1rem;border-bottom:1px solid #2D2556}
-.kpi-row{display:flex;gap:1rem;margin-bottom:1.4rem}
-.kpi-box{background:linear-gradient(135deg,#1A1830,#12102A);
-  border:1px solid #2D2556;border-radius:10px;padding:.8rem 1.2rem;flex:1;
-  border-top:3px solid #7C3AED}
-.kpi-box.accent{border-top-color:#C084FC}
-.kpi-val{font-size:1.4rem;font-weight:800;color:#E2E0F0}
-.kpi-lbl{font-size:.7rem;color:#9B8FD4;text-transform:uppercase;letter-spacing:.06em}
 .ai-banner{background:linear-gradient(135deg,#1A1040,#12102A);
   border:1px solid #4C1D95;border-radius:12px;padding:1rem 1.4rem;margin-bottom:1.1rem}
 .ai-banner-title{font-size:.95rem;font-weight:700;color:#C4B5FD;margin-bottom:.2rem}
@@ -52,9 +43,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown('<div class="pg-title">✉️ Outreach</div>', unsafe_allow_html=True)
-st.markdown('<div class="pg-sub">AI-powered personalized outreach · Email · LinkedIn · WhatsApp · Proposals</div>',
-            unsafe_allow_html=True)
+page_header("✉️", "Outreach", "AI-powered personalized outreach · Email · LinkedIn · WhatsApp · Proposals")
 
 # ── Stats row ─────────────────────────────────────────────────────────────────
 all_out     = crm.get_outreach()
@@ -64,14 +53,16 @@ opened_out  = sum(1 for o in all_out if o.get("status") == "Opened")
 replied_out = sum(1 for o in all_out if o.get("status") == "Replied")
 pending_out = sum(1 for o in all_out if o.get("status") == "Pending Approval")
 
-st.markdown(f"""
-<div class="kpi-row">
-  <div class="kpi-box"><div class="kpi-val">{total_out}</div><div class="kpi-lbl">Total Outreach</div></div>
-  <div class="kpi-box"><div class="kpi-val">{sent_out}</div><div class="kpi-lbl">Sent</div></div>
-  <div class="kpi-box"><div class="kpi-val">{opened_out}</div><div class="kpi-lbl">Opened</div></div>
-  <div class="kpi-box"><div class="kpi-val">{replied_out}</div><div class="kpi-lbl">Replied</div></div>
-  <div class="kpi-box accent"><div class="kpi-val" style="color:#C084FC">{pending_out}</div><div class="kpi-lbl">Pending Approval</div></div>
-</div>""", unsafe_allow_html=True)
+from app.services.dashboard_service import kpi_sparklines
+_spark = kpi_sparklines(crm.organization_id)
+
+ko1, ko2, ko3, ko4, ko5 = st.columns(5)
+kpi_card(ko1, "Total Outreach",   f"{total_out:,}", color="#7C3AED")
+kpi_card(ko2, "Sent",             f"{sent_out:,}", color="#6366F1", spark=_spark["emails_sent"])
+kpi_card(ko3, "Opened",           f"{opened_out:,}", color="#38BDF8")
+kpi_card(ko4, "Replied",          f"{replied_out:,}", color="#10B981", spark=_spark["replies"])
+kpi_card(ko5, "Pending Approval", f"{pending_out:,}", color="#C084FC")
+st.markdown("<div style='margin-bottom:20px'></div>", unsafe_allow_html=True)
 
 # ── Contact selector ──────────────────────────────────────────────────────────
 contacts = crm.get_contacts()
