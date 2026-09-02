@@ -441,9 +441,25 @@ def get_db():
 
 # ── Demo data seeder ──────────────────────────────────────────────────────────
 
-def seed_demo_data():
+def seed_demo_data(organization_id: int = None):
+    """
+    Seed demo companies/contacts/outreach/follow-ups for one organization.
+
+    `organization_id` must be stamped on every created row — otherwise these
+    rows are invisible to every tenant-scoped query (CRMService, the
+    dashboard, analytics all filter by organization_id), making the seeded
+    data exist in the database but nowhere in the product. Defaults to the
+    caller's first/only organization for backward compatibility with call
+    sites that don't have one handy yet.
+    """
     with get_db() as db:
-        if db.query(Company).count() > 0:
+        if organization_id is None:
+            org = db.query(Organization).first()
+            organization_id = org.id if org else None
+        if organization_id is None:
+            return  # no organization to seed into
+
+        if db.query(Company).filter(Company.organization_id == organization_id).count() > 0:
             return
 
         companies_data = [
@@ -483,7 +499,7 @@ def seed_demo_data():
 
         created = []
         for d in companies_data:
-            c = Company(**d)
+            c = Company(organization_id=organization_id, **d)
             db.add(c); db.flush()
             created.append(c)
 
@@ -502,8 +518,12 @@ def seed_demo_data():
         created_contacts = []
         for cname, name, desig, email, li, verified in contacts_raw:
             if cname in co_map:
-                ct = Contact(company_id=co_map[cname].id, name=name, designation=desig,
-                             email=email, linkedin=li, verified=verified)
+                ct = Contact(organization_id=organization_id, company_id=co_map[cname].id,
+                             name=name, designation=desig, email=email, linkedin=li,
+                             verified=verified,
+                             email_status="verified" if verified else "unverified",
+                             email_source="manual",
+                             email_verified_at=datetime.utcnow() if verified else None)
                 db.add(ct); db.flush()
                 created_contacts.append(ct)
 
@@ -528,14 +548,17 @@ def seed_demo_data():
 
         for ct, subj, body, status, sent_at, opened_at in outreach_raw:
             import uuid as _uuid_mod
-            o = Outreach(contact_id=ct.id, subject=subj, body=body, status=status,
-                         sent_at=sent_at, opened_at=opened_at,
+            replied_at = opened_at if status == "Replied" else None
+            o = Outreach(organization_id=organization_id, contact_id=ct.id,
+                         subject=subj, body=body, status=status,
+                         sent_at=sent_at, opened_at=opened_at, replied_at=replied_at,
                          tracking_id=str(_uuid_mod.uuid4()))
             db.add(o); db.flush()
             if status in ("Sent", "Opened", "Replied"):
                 for seq, days in {1: 3, 2: 7, 3: 14}.items():
                     sched = (sent_at or datetime.utcnow()) + timedelta(days=days)
                     fu = FollowUp(
+                        organization_id=organization_id,
                         outreach_id=o.id,
                         subject=f"Re: {subj}",
                         body="Hi,\n\nJust following up on my previous email.\n\nBest,\nBraveAspire Team",

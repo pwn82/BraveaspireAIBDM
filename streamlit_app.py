@@ -90,7 +90,7 @@ with st.sidebar:
                 text-overflow:ellipsis;white-space:nowrap;">{user.get('email','—')}</div>
     """, unsafe_allow_html=True)
 
-    from app.utils.rbac import ROLE_DISPLAY, has_permission
+    from app.utils.rbac import ROLE_DISPLAY, has_permission, get_current_org_id
     role       = user.get("role", "viewer")
     role_label = ROLE_DISPLAY.get(role, role)
     st.markdown(f'<div style="font-size:.72rem;color:#7C3AED;margin-bottom:8px">{role_label}</div>',
@@ -123,22 +123,95 @@ with st.sidebar:
     st.divider()
     with st.expander("⚡ Quick Actions"):
         if st.button("Load Demo Data", use_container_width=True):
-            seed_demo_data(); st.success("Demo data loaded!"); st.rerun()
+            seed_demo_data(organization_id=get_current_org_id())
+            st.success("Demo data loaded!"); st.rerun()
         if st.button("Logout", use_container_width=True):
             for k in ["authenticated","user","token"]: st.session_state.pop(k, None)
             st.rerun()
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
-crm   = get_scoped_crm(st)
-stats = crm.get_pipeline_stats()
-hour  = datetime.now().hour
-greet = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
-name  = user.get("full_name", user.get("email","").split("@")[0]).title()
+# ── Dashboard data ────────────────────────────────────────────────────────────
+crm    = get_scoped_crm(st)
+org_id = crm.organization_id
+stats  = crm.get_pipeline_stats()
+hour   = datetime.now().hour
+greet  = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
+name   = user.get("full_name", user.get("email","").split("@")[0]).title()
+
+from app.services.dashboard_service import kpi_sparklines
+from app.services.activity_service import recent_activities, humanize_delta
+from app.services.insights_service import compute_insights
+from app.services.task_service import TaskService
+
+sparklines = kpi_sparklines(org_id)
+task_svc   = TaskService(org_id)
+
+
+def _sparkline_svg(values: list, color: str, width: int = 100, height: int = 30) -> str:
+    """Inline SVG polyline — no chart library/iframe needed for a card-embedded trend line."""
+    if not values or max(values) == 0:
+        points = f"0,{height - 2} {width},{height - 2}"
+    else:
+        vmax = max(values)
+        n = len(values)
+        step = width / max(1, n - 1)
+        points = " ".join(
+            f"{i * step:.1f},{height - 2 - (v / vmax) * (height - 4):.1f}"
+            for i, v in enumerate(values)
+        )
+    return (
+        f'<svg width="100%" height="{height}" viewBox="0 0 {width} {height}" '
+        f'preserveAspectRatio="none" style="display:block;margin-top:6px">'
+        f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2" '
+        f'stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    )
+
+
+# ── Top bar: search · notifications · date range · quick add ─────────────────
+pending_approval = len(crm.get_outreach(status="Pending Approval"))
+open_tasks_count = len(task_svc.list_open(limit=50))
+notif_count = pending_approval + open_tasks_count
+
+tb_search, tb_bell, tb_dates, tb_add = st.columns([5, 1, 2.2, 1.6])
+with tb_search:
+    st.text_input("Search", placeholder="🔍  Search companies, contacts, emails...",
+                  label_visibility="collapsed", key="dash_search")
+with tb_bell:
+    with st.popover(f"🔔 {notif_count}" if notif_count else "🔔"):
+        st.markdown("**Needs your attention**")
+        if pending_approval:
+            st.markdown(f"⏳ {pending_approval} outreach message(s) awaiting approval")
+        if open_tasks_count:
+            st.markdown(f"✅ {open_tasks_count} open task(s)")
+        if not notif_count:
+            st.caption("You're all caught up.")
+with tb_dates:
+    st.markdown(f"""
+    <div style="background:#14112E;border:1px solid #2D2556;border-radius:8px;
+                padding:8px 14px;font-size:0.8rem;color:#C4B5FD;text-align:center;
+                white-space:nowrap;">
+      📅 {datetime.now().strftime('%b %d')} – {datetime.now().strftime('%b %d, %Y')}
+    </div>""", unsafe_allow_html=True)
+with tb_add:
+    with st.popover("➕ Add New", use_container_width=True):
+        if st.button("🏢 Company", use_container_width=True):
+            st.switch_page("pages/1_Companies.py")
+        if st.button("👤 Contact", use_container_width=True):
+            st.switch_page("pages/2_Contacts.py")
+        if st.button("✉️ Outreach", use_container_width=True):
+            st.switch_page("pages/3_Outreach.py")
+        st.divider()
+        with st.form("dash_quick_task", clear_on_submit=True):
+            qt_title = st.text_input("Quick task", placeholder="Follow up with...")
+            qt_priority = st.selectbox("Priority", ["low", "medium", "high"], index=1)
+            if st.form_submit_button("Add task", use_container_width=True) and qt_title:
+                task_svc.create({"title": qt_title, "priority": qt_priority,
+                                 "created_by_id": user.get("id"), "assigned_to_id": user.get("id")})
+                st.rerun()
 
 # Header
 st.markdown(f"""
 <div style="display:flex;align-items:flex-start;justify-content:space-between;
-            margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid #1E1B4B;">
+            margin:20px 0 28px;padding-bottom:20px;border-bottom:1px solid #1E1B4B;">
   <div>
     <h1 style="margin:0;font-size:1.75rem;font-weight:800;color:#EDE9FE;">
       {greet}, {name} 👋
@@ -147,22 +220,22 @@ st.markdown(f"""
       Here's what's happening with your pipeline today.
     </p>
   </div>
-  <div style="color:#8B80C4;font-size:0.82rem;padding-top:6px;">
-    {datetime.now().strftime('%B %d, %Y')}
-  </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── KPI Cards ─────────────────────────────────────────────────────────────────
+# ── KPI Cards (with real 7-day sparklines) ────────────────────────────────────
 k1, k2, k3, k4, k5 = st.columns(5)
 active = stats["pipeline"].get("Interested",0) + stats["pipeline"].get("Proposal",0)
 
-def kpi_card(col, label, value, delta=None, delta_label="vs last 7 days", icon="📊", color="#7C3AED"):
+
+def kpi_card(col, label, value, delta=None, delta_label="vs last 7 days",
+            color="#7C3AED", spark=None):
     delta_html = ""
     if delta is not None:
         sign  = "+" if delta >= 0 else ""
         dcolor = "#10B981" if delta >= 0 else "#EF4444"
         delta_html = f'<div style="font-size:0.72rem;color:{dcolor};margin-top:4px;font-weight:500;">{sign}{delta}% {delta_label}</div>'
+    spark_html = _sparkline_svg(spark, color) if spark else ""
     col.markdown(f"""
     <div style="background:linear-gradient(135deg,#16133A,#12102A);border:1px solid #2D2556;
                 border-radius:14px;padding:18px 20px;position:relative;overflow:hidden;
@@ -174,18 +247,28 @@ def kpi_card(col, label, value, delta=None, delta_label="vs last 7 days", icon="
       <div style="font-size:1.9rem;font-weight:800;color:#EDE9FE;letter-spacing:-0.02em;
                   line-height:1;">{value}</div>
       {delta_html}
+      {spark_html}
     </div>
     """, unsafe_allow_html=True)
 
-with k1: kpi_card(k1, "Total Companies", f"{stats['total_companies']:,}", 11.3, icon="🏢")
-with k2: kpi_card(k2, "Verified Contacts", f"{stats['total_contacts']:,}", 8.2, icon="👤", color="#A855F7")
-with k3: kpi_card(k3, "Emails Sent", f"{stats['emails_sent']:,}", 15.3, icon="✉️", color="#6366F1")
-with k4: kpi_card(k4, "Reply Rate", f"{stats['reply_rate']}%", round(stats['reply_rate']-5,1), icon="💬", color="#8B5CF6")
-with k5: kpi_card(k5, "Active Leads", f"{active:,}", 3.2, delta_label="vs last week", icon="🎯", color="#7C3AED")
+
+reply_rate_spark = [
+    (r / s * 100 if s else 0) for r, s in zip(sparklines["replies"], sparklines["emails_sent"])
+]
+with k1: kpi_card(k1, "Total Companies", f"{stats['total_companies']:,}", 11.3,
+                  spark=sparklines["companies"])
+with k2: kpi_card(k2, "Verified Contacts", f"{stats['total_contacts']:,}", 8.2,
+                  color="#A855F7", spark=sparklines["verified_contacts"])
+with k3: kpi_card(k3, "Emails Sent", f"{stats['emails_sent']:,}", 15.3,
+                  color="#6366F1", spark=sparklines["emails_sent"])
+with k4: kpi_card(k4, "Reply Rate", f"{stats['reply_rate']}%", round(stats['reply_rate']-5,1),
+                  color="#8B5CF6", spark=reply_rate_spark)
+with k5: kpi_card(k5, "Active Leads", f"{active:,}", 3.2, delta_label="vs last week",
+                  color="#7C3AED", spark=sparklines["companies"])
 
 st.markdown("<div style='margin-bottom:24px'></div>", unsafe_allow_html=True)
 
-# ── Pipeline Overview + Reply Rate ────────────────────────────────────────────
+# ── Pipeline Overview + Email Funnel ──────────────────────────────────────────
 left, right = st.columns([5, 4])
 
 with left:
@@ -228,82 +311,119 @@ with left:
 
 with right:
     st.markdown('<div style="font-weight:700;font-size:1rem;color:#DDD6FE;margin-bottom:12px;">Email Funnel</div>', unsafe_allow_html=True)
-    fig2 = go.Figure()
-    stages = ["Sent", "Opened", "Replied"]
-    vals   = [stats["emails_sent"], stats["emails_opened"], stats["emails_replied"]]
-    s_colors = ["#7C3AED","#A855F7","#10B981"]
-    for i, (s, v, c) in enumerate(zip(stages, vals, s_colors)):
-        pct = round(v / max(vals[0],1) * 100, 0)
-        fig2.add_trace(go.Bar(name=s, x=[v], y=[s], orientation='h',
-                              marker=dict(color=c, line=dict(width=0)),
-                              text=f"{v:,} ({pct:.0f}%)", textposition="auto",
-                              textfont=dict(color="#fff", size=11)))
-    fig2.update_layout(height=200, barmode="overlay", showlegend=False,
-                       margin=dict(l=0,r=0,t=0,b=0),
-                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                       xaxis=dict(showgrid=False, showticklabels=False, color="#8B80C4"),
-                       yaxis=dict(color="#C4B5FD", tickfont=dict(size=12)))
-    st.plotly_chart(fig2, use_container_width=True)
+    sent      = stats["emails_sent"]
+    delivered = stats.get("emails_delivered", sent)  # falls back to sent if bounce tracking not populated
+    opened    = stats["emails_opened"]
+    replied   = stats["emails_replied"]
+    stages = [("Sent", sent, "#7C3AED"), ("Delivered", delivered, "#6366F1"),
+              ("Opened", opened, "#38BDF8"), ("Replied", replied, "#10B981")]
+    base = max(sent, 1)
+
+    funnel_rows = "".join(
+        f"""
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+          <div style="width:78px;font-size:0.75rem;color:#C4B5FD;flex-shrink:0;">{s}</div>
+          <div style="flex:1;background:#1E1B4B;border-radius:6px;overflow:hidden;height:26px;position:relative;">
+            <div style="width:{max(v/base*100,3):.0f}%;height:100%;background:{c};
+                        display:flex;align-items:center;justify-content:flex-end;padding-right:8px;">
+              <span style="color:#fff;font-size:0.72rem;font-weight:700;">{v:,}</span>
+            </div>
+          </div>
+          <div style="width:44px;text-align:right;font-size:0.72rem;color:#8B80C4;">
+            {round(v/base*100)}%
+          </div>
+        </div>"""
+        for s, v, c in stages
+    )
+    st.markdown(f'<div style="padding-top:6px">{funnel_rows}</div>', unsafe_allow_html=True)
 
 st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 st.divider()
 
-# ── AI Insights + Activity Feed ───────────────────────────────────────────────
-ins_col, feed_col = st.columns([3, 2])
+# ── Recent Activities · My Tasks · AI Insights ────────────────────────────────
+act_col, task_col, insight_col = st.columns(3)
 
-with ins_col:
-    st.markdown('<div style="font-weight:700;font-size:1rem;color:#DDD6FE;margin-bottom:14px;">🤖 AI Insights</div>', unsafe_allow_html=True)
-    insights = [
-        ("🔥", "Hot Leads",           "#EF4444",
-         f"{stats['pipeline'].get('Interested',0)} companies are actively hiring for roles matching your ideal customer profile.",
-         "View Leads →"),
-        ("📧", "Best Performing",     "#10B981",
-         f"Your outreach has {stats['open_rate']}% open rate. Reply rate is {stats['reply_rate']}% this week.",
-         "View Templates →"),
-        ("⚠️", "Action Needed",       "#F59E0B",
-         f"{stats['pipeline'].get('Proposal',0)} follow-ups are pending. Take action to increase reply rate.",
-         "View Follow-ups →"),
-    ]
-    cols = st.columns(3)
-    for col, (icon, title, color, desc, cta) in zip(cols, insights):
-        col.markdown(f"""
-        <div style="background:#14112E;border:1px solid #2D2556;border-radius:12px;
-                    padding:14px;height:140px;border-top:2px solid {color};">
-          <div style="display:flex;align-items:center;gap:7px;margin-bottom:8px;">
-            <span style="font-size:1rem;">{icon}</span>
-            <span style="color:#DDD6FE;font-weight:600;font-size:0.82rem;">{title}</span>
-          </div>
-          <p style="color:#9580C4;font-size:0.75rem;line-height:1.4;margin:0 0 8px;">{desc}</p>
-          <span style="color:{color};font-size:0.72rem;font-weight:600;cursor:pointer;">{cta}</span>
-        </div>
-        """, unsafe_allow_html=True)
-
-with feed_col:
-    st.markdown('<div style="font-weight:700;font-size:1rem;color:#DDD6FE;margin-bottom:14px;">📋 Activity Feed</div>', unsafe_allow_html=True)
-    outreach = crm.get_outreach()[:5]
-    if outreach:
-        for o in outreach:
-            status  = o.get("status","")
-            contact = o.get("contact_name","Unknown")
-            company = o.get("company_name","—")
-            date    = (o.get("sent_at") or o.get("created_at",""))[:10]
-            s_color = {"Sent":"#7C3AED","Opened":"#10B981","Replied":"#A855F7",
-                       "Draft":"#8B80C4","Bounced":"#EF4444"}.get(status,"#8B80C4")
+with act_col:
+    st.markdown('<div style="font-weight:700;font-size:1rem;color:#DDD6FE;margin-bottom:14px;">📋 Recent Activities</div>', unsafe_allow_html=True)
+    activities = recent_activities(org_id, limit=6)
+    if activities:
+        for a in activities:
             st.markdown(f"""
-            <div style="display:flex;align-items:center;gap:10px;padding:8px 0;
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;
                         border-bottom:1px solid #1E1B4B;">
-              <div style="width:7px;height:7px;border-radius:50%;background:{s_color};flex-shrink:0;"></div>
+              <div style="width:28px;height:28px;border-radius:8px;background:#1E1B4B;
+                          display:flex;align-items:center;justify-content:center;
+                          font-size:0.85rem;flex-shrink:0;">{a['icon']}</div>
               <div style="flex:1;min-width:0;">
                 <div style="color:#C4B5FD;font-size:0.8rem;font-weight:500;
                             overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                  {contact} @ {company}
+                  {a['title']}
                 </div>
-                <div style="color:#8B80C4;font-size:0.7rem;">{status} · {date}</div>
+                <div style="color:#8B80C4;font-size:0.7rem;">{a['subtitle'] or ''}</div>
               </div>
+              <div style="color:#7B6EA8;font-size:0.68rem;white-space:nowrap;">{humanize_delta(a['at'])}</div>
             </div>
             """, unsafe_allow_html=True)
     else:
         st.markdown('<p style="color:#8B80C4;font-size:0.85rem;">No activity yet.</p>', unsafe_allow_html=True)
+
+with task_col:
+    st.markdown('<div style="font-weight:700;font-size:1rem;color:#DDD6FE;margin-bottom:14px;">✅ My Tasks</div>', unsafe_allow_html=True)
+    open_tasks = task_svc.list_open(assigned_to_id=user.get("id"), limit=6) or task_svc.list_open(limit=6)
+    prio_color = {"high": "#EF4444", "medium": "#F59E0B", "low": "#60A5FA"}
+    if open_tasks:
+        for t in open_tasks:
+            c1, c2 = st.columns([0.15, 0.85])
+            with c1:
+                if st.checkbox("", key=f"task_done_{t['id']}", label_visibility="collapsed"):
+                    task_svc.complete(t["id"])
+                    st.rerun()
+            with c2:
+                pc = prio_color.get(t["priority"], "#8B80C4")
+                due = f" · Due {t['due_date']}" if t["due_date"] else ""
+                st.markdown(f"""
+                <div style="padding:2px 0 10px;border-bottom:1px solid #1E1B4B;margin-bottom:2px;">
+                  <div style="color:#DDD6FE;font-size:0.82rem;font-weight:500;">{t['title']}</div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+                    <span style="background:{pc}22;color:{pc};border-radius:8px;padding:1px 8px;
+                                font-size:0.65rem;font-weight:700;text-transform:uppercase;">{t['priority']}</span>
+                    <span style="color:#7B6EA8;font-size:0.68rem;">{due}</span>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown('<p style="color:#8B80C4;font-size:0.85rem;">Nothing on your plate — use <b>+ Add New</b> above to create one.</p>', unsafe_allow_html=True)
+
+with insight_col:
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+      <span style="font-weight:700;font-size:1rem;color:#DDD6FE;">🤖 AI Insights</span>
+      <span style="background:rgba(124,58,237,0.2);color:#C4B5FD;border-radius:10px;
+                   padding:1px 8px;font-size:0.65rem;font-weight:700;">BETA</span>
+    </div>""", unsafe_allow_html=True)
+    insights = compute_insights(org_id)
+    if insights:
+        for ins in insights:
+            st.markdown(f"""
+            <div style="background:#14112E;border:1px solid #2D2556;border-radius:12px;
+                        padding:14px;margin-bottom:10px;">
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">
+                <span style="font-size:1rem;">{ins['icon']}</span>
+                <span style="color:#DDD6FE;font-weight:600;font-size:0.82rem;">{ins['title']}</span>
+              </div>
+              <p style="color:#9580C4;font-size:0.75rem;line-height:1.4;margin:0;">{ins['body']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button(f"{ins['cta_label']} →", key=f"ins_cta_{ins['title']}", use_container_width=True):
+                st.switch_page(ins["cta_page"])
+    else:
+        st.markdown("""
+        <div style="background:#14112E;border:1px solid #2D2556;border-radius:12px;padding:16px;">
+          <p style="color:#8B80C4;font-size:0.8rem;margin:0;line-height:1.5;">
+            Not enough outreach history yet to surface a reliable insight —
+            these are computed from real send/reply data, never guessed.
+            Send a few more campaigns and check back here.
+          </p>
+        </div>""", unsafe_allow_html=True)
 
 st.divider()
 
@@ -320,15 +440,3 @@ with qa4:
     if st.button("🔁 Follow-ups",     use_container_width=True): st.switch_page("pages/4_Followups.py")
 with qa5:
     if st.button("💬 AI Chat",        use_container_width=True): st.switch_page("pages/6_AI_Chat.py")
-
-# ── Bottom stats ──────────────────────────────────────────────────────────────
-st.divider()
-st.markdown('<div style="font-weight:700;font-size:1rem;color:#DDD6FE;margin-bottom:14px;">📊 Performance Summary</div>', unsafe_allow_html=True)
-m1, m2, m3, m4, m5 = st.columns(5)
-with m1: st.metric("Contacts",       stats["total_contacts"])
-with m2: st.metric("Deals Won",      stats["pipeline"].get("Won",0))
-with m3: st.metric("Win Rate",       f"{stats['conversion_rate']}%")
-with m4: st.metric("Total Outreach", stats["total_outreach"])
-with m5:
-    from app.services.email_tracking_service import get_tracking_stats
-    st.metric("Tracked Opens", get_tracking_stats()["unique_opens"])

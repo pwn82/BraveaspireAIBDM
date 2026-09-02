@@ -501,7 +501,7 @@ with tab_db:
 
     st.divider()
     if st.button("Load Demo Data"):
-        seed_demo_data()
+        seed_demo_data(organization_id=crm.organization_id)
         st.success("Demo data loaded!")
 
     if st.button("Re-index Vector DB"):

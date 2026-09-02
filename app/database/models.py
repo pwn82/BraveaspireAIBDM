@@ -426,3 +426,35 @@ class AILog(Base):
     __table_args__ = (
         Index("ix_ai_logs_org_created", "organization_id", "created_at"),
     )
+
+
+class Task(Base):
+    """
+    A user's simple to-do item — the dashboard's "My Tasks" panel.
+
+    Deliberately not tied to a workflow/automation system: a human creates
+    these (manually, or a follow-up/approval flow could create one later),
+    a human checks them off. `related_type`/`related_id` optionally link
+    back to the record the task is about (a company, contact, outreach)
+    so the UI can deep-link "Follow up with TechNova Solutions" to that company.
+    """
+    __tablename__ = "tasks"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    assigned_to_id  = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    created_by_id   = Column(Integer, ForeignKey("users.id"), nullable=True)
+    title           = Column(String(300), nullable=False)
+    description     = Column(Text, nullable=True)
+    priority        = Column(String(10), default="medium")   # low | medium | high
+    status          = Column(String(20), default="open")     # open | done
+    due_date        = Column(DateTime, nullable=True)
+    related_type    = Column(String(20), nullable=True)       # company | contact | outreach
+    related_id      = Column(Integer, nullable=True)
+    completed_at    = Column(DateTime, nullable=True)
+    created_at      = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_tasks_org_status_due", "organization_id", "status", "due_date"),
+        Index("ix_tasks_org_assignee", "organization_id", "assigned_to_id"),
+    )
