@@ -39,15 +39,25 @@ Cloud's secrets store:
 2. Paste this template and fill in your real values:
 
 ```toml
+# Database — you already have a working Neon Postgres. Copy the exact
+# DATABASE_URL value from your local .env file (do not reuse this doc's
+# placeholder).
+DATABASE_URL    = "postgresql://user:pass@ep-xxx.aws.neon.tech/braveaspire?sslmode=require&channel_binding=require"
+
 # AI Provider
 AI_PROVIDER     = "groq"
-GROQ_API_KEY    = "gsk_your_new_rotated_groq_key"
+GROQ_API_KEY    = "gsk_your_ROTATED_groq_key"   # rotate before deploying — see note below
 GROQ_MODEL      = "llama-3.3-70b-versatile"
 
-# Lead Scraping
-APIFY_API_TOKEN = "apify_api_your_new_rotated_token"
+# Anthropic (optional secondary provider)
+ANTHROPIC_API_KEY       = "sk-ant-your_anthropic_api_key_here"
+ANTHROPIC_MODEL         = "claude-haiku-4-5-20251001"
+ANTHROPIC_WORKSPACE_ID  = "wrkspc_..."   # only needed if you saw "anthropic-workspace-id is required"
 
-# Email / SMTP (only if you want to send emails)
+# Lead Scraping
+APIFY_API_TOKEN = "apify_api_your_ROTATED_token"   # rotate before deploying — see note below
+
+# Email / SMTP (Gmail App Password — same value for SMTP and IMAP)
 SMTP_HOST       = "smtp.gmail.com"
 SMTP_PORT       = "587"
 SMTP_USER       = "you@gmail.com"
@@ -55,9 +65,11 @@ SMTP_PASSWORD   = "your_gmail_app_password"
 FROM_EMAIL      = "you@gmail.com"
 FROM_NAME       = "BraveAspire AI BDM"
 
-# Database — leave blank to use SQLite (works out of the box).
-# For production with persistent data, use a managed Postgres:
-#   DATABASE_URL = "postgresql://user:pass@host:5432/dbname"
+# IMAP (inbox reply detection)
+IMAP_HOST       = "imap.gmail.com"
+IMAP_PORT       = "993"
+IMAP_USER       = "you@gmail.com"
+IMAP_PASSWORD   = "your_gmail_app_password"
 
 # Auth
 SECRET_KEY      = "generate-a-random-32-char-string-here"
@@ -75,13 +87,18 @@ existing code that uses `os.getenv("APIFY_API_TOKEN")` etc. just works.
 
 ---
 
-## Recommended: use a real database (not SQLite)
+## Database — already done, just carry it over
 
 **Important:** SQLite on Streamlit Cloud lives on **ephemeral storage**.
 Every time your app sleeps or restarts, the file is wiped. All your imported
 companies, contacts, outreach, and user accounts will be lost.
 
-For production, point at a managed database — free tiers below are generous:
+You already have a working Neon Postgres instance (see `DATABASE_URL` in
+your local `.env`) — just paste that same value into Streamlit Cloud's
+Secrets (above) and the deployed app uses the exact same real data you've
+been testing against locally. No new setup needed.
+
+If you ever need a fresh one, free-tier options:
 
 ### Option A: Neon (PostgreSQL — recommended)
 
